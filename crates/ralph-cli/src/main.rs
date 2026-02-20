@@ -151,12 +151,31 @@ pub enum ColorMode {
 impl ColorMode {
     /// Returns true if colors should be used based on mode and terminal detection.
     fn should_use_colors(self) -> bool {
+        // NO_COLOR is a de-facto cross-tooling convention and should disable ANSI
+        // colors by default, regardless of output mode.
+        if std::env::var("NO_COLOR").is_ok() {
+            return false;
+        }
+
         match self {
             ColorMode::Always => true,
             ColorMode::Never => false,
             ColorMode::Auto => stdout().is_terminal(),
         }
     }
+}
+
+/// Returns the default config source path.
+///
+/// `RALPH_CONFIG` (if set) is used before the hardcoded fallback to `ralph.yml`.
+pub(crate) fn default_config_path() -> PathBuf {
+    if let Ok(value) = std::env::var("RALPH_CONFIG") {
+        if !value.trim().is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+
+    PathBuf::from("ralph.yml")
 }
 
 /// Verbosity level for streaming output.
@@ -341,12 +360,17 @@ pub(crate) fn load_config_with_overrides(
             RalphConfig::default()
         }
     } else {
-        // Only overrides specified - load default ralph.yml as base
-        let default_path = PathBuf::from("ralph.yml");
+        // Only overrides specified - load default path as base
+        let default_path = default_config_path();
         if default_path.exists() {
-            RalphConfig::from_file(&default_path)
-                .with_context(|| "Failed to load config from ralph.yml")?
+            RalphConfig::from_file(&default_path).with_context(|| {
+                format!("Failed to load config from {}", default_path.display())
+            })?
         } else {
+            warn!(
+                "Config file {} not found, using defaults",
+                default_path.display()
+            );
             RalphConfig::default()
         }
     };
@@ -375,9 +399,9 @@ struct Cli {
     // Global options (available for all subcommands)
     // ─────────────────────────────────────────────────────────────────────────
     /// Configuration source: file path, builtin:preset, URL, or core.field=value override.
-    /// Not every command consumes all source types, but this flag is accepted by supported commands.
     /// Can be specified multiple times. Overrides are applied after config file loading.
-    #[arg(short, long, default_value = "ralph.yml", global = true, action = ArgAction::Append)]
+    /// If not set, defaults to `ralph.yml` or `$RALPH_CONFIG`.
+    #[arg(short, long, global = true, action = ArgAction::Append)]
     config: Vec<String>,
 
     /// Verbose output
@@ -846,17 +870,14 @@ async fn main() -> Result<()> {
     }
 
     // Parse all config sources from CLI
-    let config_sources: Vec<ConfigSource> =
-        cli.config.iter().map(|s| ConfigSource::parse(s)).collect();
+    let config_values: Vec<String> = if cli.config.is_empty() {
+        vec![default_config_path().to_string_lossy().to_string()]
+    } else {
+        cli.config.clone()
+    };
 
-    if !is_default_config_only(&cli.config)
-        && !command_supports_config(&cli.command)
-    {
-        warn!(
-            "The -c/--config flag is not used by `{}`. Use `ralph --help` for commands that support config files.",
-            command_name(&cli.command)
-        );
-    }
+    let config_sources: Vec<ConfigSource> =
+        config_values.iter().map(|s| ConfigSource::parse(s)).collect();
 
     match cli.command {
         Some(Commands::Run(args)) => {
@@ -915,50 +936,7 @@ async fn main() -> Result<()> {
     }
 }
 
-fn is_default_config_only(raw: &[String]) -> bool {
-    raw.len() == 1 && raw.first().is_some_and(|s| s == "ralph.yml")
-}
 
-fn command_supports_config(command: &Option<Commands>) -> bool {
-    matches!(
-        command,
-        None
-            | Some(Commands::Run(_))
-            | Some(Commands::Preflight(_))
-            | Some(Commands::Doctor(_))
-            | Some(Commands::Resume(_))
-            | Some(Commands::Clean(_))
-            | Some(Commands::Plan(_))
-            | Some(Commands::CodeTask(_))
-            | Some(Commands::Task(_))
-            | Some(Commands::Hats(_))
-            | Some(Commands::Bot(_))
-    )
-}
-
-fn command_name(command: &Option<Commands>) -> &'static str {
-    match command {
-        None => "ralph run",
-        Some(Commands::Run(_)) => "ralph run",
-        Some(Commands::Preflight(_)) => "ralph preflight",
-        Some(Commands::Doctor(_)) => "ralph doctor",
-        Some(Commands::Tutorial(_)) => "ralph tutorial",
-        Some(Commands::Resume(_)) => "ralph resume",
-        Some(Commands::Events(_)) => "ralph events",
-        Some(Commands::Init(_)) => "ralph init",
-        Some(Commands::Clean(_)) => "ralph clean",
-        Some(Commands::Emit(_)) => "ralph emit",
-        Some(Commands::Plan(_)) => "ralph plan",
-        Some(Commands::CodeTask(_)) => "ralph code-task",
-        Some(Commands::Task(_)) => "ralph task",
-        Some(Commands::Tools(_)) => "ralph tools",
-        Some(Commands::Loops(_)) => "ralph loops",
-        Some(Commands::Hats(_)) => "ralph hats",
-        Some(Commands::Web(_)) => "ralph web",
-        Some(Commands::Bot(_)) => "ralph bot",
-        Some(Commands::Completions(_)) => "ralph completions",
-    }
-}
 
 fn format_preflight_summary(report: &PreflightReport) -> String {
     let icons: Vec<String> = report
@@ -1147,7 +1125,7 @@ async fn run_command(
                 let preset = presets::get_preset(name).ok_or_else(|| {
                     let available = presets::preset_names().join(", ");
                     anyhow::anyhow!(
-                        "Unknown preset '{}'. Run `ralph init --list-presets` to see available presets.\n\nAvailable: {}",
+                        "Unknown preset '{}'. Run `ralph init --list-presets` to see available presets, then retry with `-c builtin:<name>`.\n\nAvailable: {}",
                         name,
                         available
                     )
@@ -1180,13 +1158,17 @@ async fn run_command(
             ConfigSource::Override { .. } => unreachable!("Partitioned out overrides"),
         }
     } else {
-        // Only overrides specified - load default ralph.yml as base
-        let default_path = PathBuf::from("ralph.yml");
+        // Only overrides specified - load default config path as base
+        let default_path = default_config_path();
         if default_path.exists() {
-            RalphConfig::from_file(&default_path)
-                .with_context(|| "Failed to load config from ralph.yml")?
+            RalphConfig::from_file(&default_path).with_context(|| {
+                format!("Failed to load config from {}", default_path.display())
+            })?
         } else {
-            warn!("Config file ralph.yml not found, using defaults");
+            warn!(
+                "Config file {} not found, using defaults",
+                default_path.display()
+            );
             RalphConfig::default()
         }
     };
@@ -1771,7 +1753,7 @@ fn init_command(color_mode: ColorMode, args: InitArgs) -> Result<()> {
     println!("  ralph init --backend <backend>   Generate minimal config for backend");
     println!("  ralph init --preset <preset>     Use an embedded preset");
     println!("  ralph init --list-presets        Show available presets\n");
-    println!("Backends: claude, kiro, gemini, codex, amp, custom");
+    println!("Backends: {}", backend_support::VALID_BACKENDS_LABEL);
     println!("\nRun 'ralph init --list-presets' to see available presets.");
 
     Ok(())

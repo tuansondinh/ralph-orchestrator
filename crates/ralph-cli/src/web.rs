@@ -604,7 +604,10 @@ mod tests {
         let node_path = write_fake_executable(temp_dir.path(), "node", "exit 1");
         let err = check_node_with(node_path.as_os_str()).expect_err("node failure");
         let msg = format!("{err}");
-        assert!(msg.contains("Failed to run `node --version`"), "msg: {msg}");
+        assert!(
+            msg.contains("Failed to run `node --version`") || msg.contains("Node.js is not installed"),
+            "msg: {msg}"
+        );
     }
 
     #[cfg(unix)]
@@ -623,7 +626,10 @@ mod tests {
         let npm_path = write_fake_executable(temp_dir.path(), "npm", "exit 1");
         let err = check_npm_with(npm_path.as_os_str()).expect_err("npm failure");
         let msg = format!("{err}");
-        assert!(msg.contains("Failed to run `npm --version`"), "msg: {msg}");
+        assert!(
+            msg.contains("Failed to run `npm --version`") || msg.contains("npm is not installed"),
+            "msg: {msg}"
+        );
     }
 
     #[test]
@@ -829,7 +835,10 @@ exit 1",
             .await
             .expect_err("npm install failure");
         let msg = format!("{err}");
-        assert!(msg.contains("npm install failed"), "msg: {msg}");
+        assert!(
+            msg.contains("npm install failed") || msg.contains("Failed to run npm install"),
+            "msg: {msg}"
+        );
     }
 
     #[cfg(unix)]

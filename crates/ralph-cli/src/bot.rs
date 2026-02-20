@@ -41,10 +41,6 @@ pub enum BotCommands {
 
 #[derive(Parser, Debug)]
 pub struct OnboardArgs {
-    /// Use Telegram onboarding (currently the only supported backend)
-    #[arg(long, default_value = "true")]
-    pub telegram: bool,
-
     /// Skip interactive token prompt, provide token directly
     #[arg(long)]
     pub token: Option<String>,
@@ -167,12 +163,6 @@ fn bot_token_set(args: SetTokenArgs, use_colors: bool) -> Result<()> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async fn onboard_telegram(args: OnboardArgs, use_colors: bool) -> Result<()> {
-    if !args.telegram {
-        anyhow::bail!(
-            "`--no-telegram` is not supported yet; use `ralph bot onboard` for Telegram setup."
-        );
-    }
-
     println!();
     if use_colors {
         println!("\x1b[1mRalph Telegram Bot Setup\x1b[0m");

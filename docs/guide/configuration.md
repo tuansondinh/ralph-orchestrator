@@ -4,9 +4,10 @@ Complete reference for Ralph's YAML configuration.
 
 ## Configuration File
 
-Ralph uses `ralph.yml` by default. Override with:
+Ralph uses `ralph.yml` by default. Override with `$RALPH_CONFIG` or:
 
 ```bash
+RALPH_CONFIG=/path/to/config.yml ralph run ...
 ralph run -c custom-config.yml
 ```
 
@@ -31,10 +32,10 @@ You can override specific core fields from the command line without creating a s
 
 ```bash
 # Override scratchpad (loads ralph.yml + applies override)
-ralph run -c core.scratchpad=.agent/feature-auth/scratchpad.md
+ralph run -c core.scratchpad=.ralph/agent/feature-auth/scratchpad.md
 
 # Explicit config + override
-ralph run -c ralph.yml -c core.scratchpad=.agent/feature-auth/scratchpad.md
+ralph run -c ralph.yml -c core.scratchpad=.ralph/agent/feature-auth/scratchpad.md
 
 # Multiple overrides
 ralph run -c core.scratchpad=.runs/task-1/scratchpad.md -c core.specs_dir=./custom-specs/
@@ -65,7 +66,7 @@ core:
   specs_dir: "./specs/"                 # Specifications directory
   guardrails:                           # Rules injected into every prompt
     - "Fresh context each iteration"
-    - "Backpressure is law"
+    - "Never modify production database"
 
 # Memories — persistent learning
 memories:
@@ -74,7 +75,7 @@ memories:
   budget: 2000                          # Max tokens to inject
   filter:
     types: []                           # Filter by memory type
-    tags: []                            # Filter by tags
+    tags: []                            # Filter by memory tags
     recent: 0                           # Days limit (0 = no limit)
 
 # Tasks — runtime work tracking
@@ -128,6 +129,8 @@ Backend configuration.
 - `amp` — Amp
 - `copilot` — Copilot CLI
 - `opencode` — OpenCode
+- `pi` — Pi
+- `custom` — Custom adapter/backend
 
 **Prompt mode values:**
 - `arg` — Pass as CLI argument: `cli -p "prompt"`

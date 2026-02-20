@@ -4,11 +4,11 @@ Complete reference for Ralph's command-line interface.
 
 ## Global Options
 
-These options are accepted by all commands. Note: not every subcommand consumes config sources; if `-c/--config` is provided to a subcommand that doesn't use it, behavior falls back to command defaults and a warning is shown.
+These options are accepted by all commands.
 
 | Option | Description |
 |--------|-------------|
-| `-c, --config <SOURCE>` | Config source (can be specified multiple times) |
+| `-c, --config <SOURCE>` | Config source (can be specified multiple times). Defaults to `ralph.yml`, or `$RALPH_CONFIG` when set. |
 | `-v, --verbose` | Verbose output |
 | `--color <MODE>` | Color output: `auto`, `always`, `never` |
 | `-h, --help` | Show help |
@@ -16,7 +16,10 @@ These options are accepted by all commands. Note: not every subcommand consumes 
 
 ### Config Sources (`-c`)
 
-The `-c` flag specifies where to load configuration from. If not provided, `ralph.yml` is loaded by default (for commands that support config loading).
+The `-c` flag specifies where to load configuration from. If not provided, `ralph` falls back to:
+
+1. `$RALPH_CONFIG` when present
+2. `ralph.yml`
 
 **Config source types:**
 
@@ -27,8 +30,7 @@ The `-c` flag specifies where to load configuration from. If not provided, `ralp
 | `https://example.com/config.yml` | Remote URL |
 | `core.field=value` | Core config override |
 
-The first non-override source is used as the base config.
-Overrides (`core.field=value`) are applied in order and replace earlier values.
+The first non-override source is used as the base config. Later core overrides replace earlier values.
 
 **Supported override fields:**
 
@@ -46,7 +48,7 @@ ralph run -c production.yml
 # Use embedded preset
 ralph run -c builtin:tdd-red-green
 
-# Override scratchpad (loads ralph.yml + applies override)
+# Override scratchpad (loads default config + applies override)
 ralph run -c core.scratchpad=.ralph/agent/feature-x/scratchpad.md
 
 # Explicit config + override
@@ -56,7 +58,7 @@ ralph run -c ralph.yml -c core.scratchpad=.ralph/agent/feature-x/scratchpad.md
 ralph run -c core.scratchpad=.runs/task-123/scratchpad.md -c core.specs_dir=./my-specs/
 ```
 
-Overrides are applied after config file loading, so they take precedence.
+Overrides are applied after config load, so they take precedence.
 
 ## Commands
 
@@ -79,45 +81,17 @@ ralph run [OPTIONS]
 | `--dry-run` | Show what would execute |
 | `--no-tui` | Disable TUI mode |
 | `-a, --autonomous` | Force headless mode |
-| `--idle-timeout <SECS>` | TUI idle timeout (default: 30) |
-| `--record-session <FILE>` | Record session to JSONL |
-| `-q, --quiet` | Suppress output (for CI) |
+| `--idle-timeout <SECS>` | TUI idle timeout |
+| `--exclusive` | Wait for primary loop slot |
+| `--no-auto-merge` | Skip automatic merge after worktree loops complete |
+| `--skip-preflight` | Skip preflight checks |
+| `--record-session <FILE>` | Record session JSONL |
+| `-q, --quiet` | Suppress streaming output |
 | `--continue` | Resume from existing state |
-
-**Examples:**
-
-```bash
-# Basic run with TUI
-ralph run
-
-# With inline prompt
-ralph run -p "Implement user authentication"
-
-# Use custom config
-ralph run -c production.yml
-
-# Use builtin preset
-ralph run -c builtin:tdd-red-green
-
-# Override scratchpad for parallel runs
-ralph run -c ralph.yml -c core.scratchpad=.ralph/agent/feature-x/scratchpad.md
-
-# Dry run
-ralph run --dry-run
-
-# CI mode (quiet, no TUI)
-ralph run -q --no-tui
-
-# Limit iterations
-ralph run --max-iterations 50
-
-# Record session for debugging
-ralph run --record-session debug.jsonl
-```
 
 ### ralph init
 
-Initialize configuration file.
+Initialize `ralph.yml`.
 
 ```bash
 ralph init [OPTIONS]
@@ -132,20 +106,36 @@ ralph init [OPTIONS]
 | `--list-presets` | List available presets |
 | `--force` | Overwrite existing config |
 
-**Examples:**
+### ralph preflight
+
+Run the preflight check suite.
 
 ```bash
-# Traditional mode with Claude
-ralph init --backend claude
+ralph preflight [OPTIONS]
+```
 
-# Use TDD preset
-ralph init --preset tdd-red-green
+**Options:**
 
-# List all presets
-ralph init --list-presets
+| Option | Description |
+|--------|-------------|
+| `--format <human|json>` | Output format |
+| `--strict` | Treat warnings as failures |
+| `--check <NAME>` | Run one or more checks |
 
-# Force overwrite
-ralph init --preset debug --force
+### ralph doctor
+
+Run environment and first-run diagnostic checks.
+
+```bash
+ralph doctor [OPTIONS]
+```
+
+### ralph tutorial
+
+Run interactive intro walkthrough.
+
+```bash
+ralph tutorial [OPTIONS]
 ```
 
 ### ralph plan
@@ -160,80 +150,45 @@ ralph plan [OPTIONS] [IDEA]
 
 | Option | Description |
 |--------|-------------|
-| `<IDEA>` | Optional rough idea to develop |
-| `-b, --backend <BACKEND>` | Backend to use |
+| `<IDEA>` | Optional rough idea |
+| `-b, --backend <BACKEND>` | Backend override |
 | `--teams` | Enable Claude Code agent teams mode |
-| `-- <ARGUMENTS>` | Pass custom backend command/arguments |
+| `-- <ARGUMENTS>` | Custom backend arguments |
 
-**Examples:**
+### ralph code-task
+
+Generate code task files from a description or PDD plan.
 
 ```bash
-# Interactive planning
-ralph plan
-
-# Plan with idea
-ralph plan "build a REST API"
-
-# Use specific backend
-ralph plan --backend kiro "my idea"
+ralph code-task [OPTIONS] [INPUT]
 ```
 
 ### ralph task
 
-> DEPRECATED: legacy alias for `ralph code-task`.
-> Runtime task management is `ralph tools task`.
-
-Generate code task files.
+Deprecated legacy alias for `ralph code-task`.
 
 ```bash
 ralph task [OPTIONS] [INPUT]
+```
+
+### ralph events
+
+View event history for the current or selected run.
+
+```bash
+ralph events [OPTIONS]
 ```
 
 **Options:**
 
 | Option | Description |
 |--------|-------------|
-| `<INPUT>` | Description text or path to PDD plan file |
-| `-b, --backend <BACKEND>` | Backend to use |
-| `--teams` | Enable Claude Code agent teams mode |
-| `-- <ARGUMENTS>` | Pass custom backend command/arguments |
-
-**Examples:**
-
-```bash
-# Interactive task creation
-ralph task
-
-# From description
-ralph task "add authentication"
-
-# From PDD plan
-ralph task specs/feature/plan.md
-```
-
-### ralph events
-
-View event history.
-
-```bash
-ralph events [OPTIONS]
-```
-
-**Examples:**
-
-```bash
-# View all events
-ralph events
-
-# Output:
-# 2024-01-21 10:30:00 task.start → planner
-# 2024-01-21 10:32:15 plan.ready → builder
-# 2024-01-21 10:35:42 build.done → reviewer
-```
+| `--file <PATH>` | Use a specific events file |
+| `--clear` | Clear event history |
 
 ### ralph emit
 
-Emit an event to the event log.
+Emit an event to the current run's events file.
 
 ```bash
 ralph emit <TOPIC> [PAYLOAD] [OPTIONS]
@@ -244,22 +199,14 @@ ralph emit <TOPIC> [PAYLOAD] [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `<TOPIC>` | Event topic (e.g., `build.done`) |
-| `[PAYLOAD]` | Optional text payload |
-| `--json <DATA>` | JSON payload |
-
-**Examples:**
-
-```bash
-# Simple event
-ralph emit "build.done" "tests: pass, lint: pass, typecheck: pass, audit: pass, coverage: pass"
-
-# JSON payload
-ralph emit "review.done" --json '{"status": "approved", "issues": 0}'
-```
+| `[PAYLOAD]` | Optional payload (string or JSON when `--json` is set) |
+| `-j, --json` | Parse payload as JSON object |
+| `--ts <TIMESTAMP>` | Override event timestamp |
+| `--file <PATH>` | Events file path (`.ralph/events.jsonl`) |
 
 ### ralph clean
 
-Clean up `.ralph/agent/` directory.
+Clean `.ralph/agent` scratchpad and memory state.
 
 ```bash
 ralph clean [OPTIONS]
@@ -270,28 +217,84 @@ ralph clean [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--diagnostics` | Clean diagnostics directory |
-| `--dry-run` | Preview deletions without removing files |
+| `--dry-run` | Preview deletions |
 
-**Examples:**
+### ralph loops
+
+Manage parallel loops and worktree loop lifecycle.
 
 ```bash
-# Clean agent state
-ralph clean
-
-# Preview what would be deleted
-ralph clean --dry-run
-
-# Clean diagnostics
-ralph clean --diagnostics
+ralph loops [OPTIONS] [COMMAND]
 ```
+
+**Subcommands:**
+
+- `list [--json] [--all]`
+- `logs <loop-id> [--follow]`
+- `history <loop-id> [--json]`
+- `retry <loop-id>`
+- `discard <loop-id> [--yes]`
+- `stop [loop-id] [--force]`
+- `prune`
+- `attach <loop-id>`
+- `diff <loop-id> [--stat]`
+- `merge <loop-id> [--force]`
+- `process`
+- `merge-button-state <loop-id>`
+
+### ralph hats
+
+Manage and inspect configured hats.
+
+```bash
+ralph hats [OPTIONS] [COMMAND]
+```
+
+**Subcommands:**
+
+- `list [--format table|json]`
+- `show <name>`
+- `validate`
+- `graph [--format unicode|ascii|compact|mermaid] [--backend <backend>]`
+
+### ralph web
+
+Run the web dashboard.
+
+```bash
+ralph web [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--backend-port <BACKEND_PORT>` | Backend port (default: 3000) |
+| `--frontend-port <FRONTEND_PORT>` | Frontend port (default: 5173) |
+| `--workspace <WORKSPACE>` | Workspace root |
+| `--no-open` | Do not open browser |
+
+### ralph bot
+
+Manage Telegram bot setup and testing.
+
+```bash
+ralph bot [OPTIONS] <COMMAND>
+```
+
+**Subcommands:**
+
+- `onboard [--token <TOKEN>] [--chat-id <CHAT_ID>] [--timeout <SECONDS>]`
+- `status`
+- `test [MESSAGE]`
+- `token set <TOKEN> [--config <path>]`
+- `daemon`
 
 ### ralph tools
 
-Runtime tools for memories and tasks.
+Runtime tools for memories, tasks, and skills.
 
 #### ralph tools memory
-
-Manage persistent memories.
 
 ```bash
 ralph tools memory <SUBCOMMAND>
@@ -301,64 +304,15 @@ ralph tools memory <SUBCOMMAND>
 
 | Command | Description |
 |---------|-------------|
-| `add <CONTENT>` | Add a new memory |
+| `init` | Initialize memory file |
+| `add <CONTENT>` | Store a new memory |
 | `search <QUERY>` | Search memories |
-| `list` | List all memories |
-| `show <ID>` | Show memory details |
+| `list` | List memories |
+| `show <ID>` | Show a memory |
 | `delete <ID>` | Delete a memory |
-| `prime` | Prime memories for injection |
-
-**Add Options:**
-
-| Option | Description |
-|--------|-------------|
-| `-t, --type <TYPE>` | Memory type: `pattern`, `decision`, `fix`, `context` |
-| `--tags <TAGS>` | Comma-separated tags |
-
-**Search Options:**
-
-| Option | Description |
-|--------|-------------|
-| `-t, --type <TYPE>` | Filter by type |
-| `--tags <TAGS>` | Filter by tags |
-
-**List Options:**
-
-| Option | Description |
-|--------|-------------|
-| `-t, --type <TYPE>` | Filter by type |
-| `--last <N>` | Show last N memories |
-
-**Prime Options:**
-
-| Option | Description |
-|--------|-------------|
-| `--budget <N>` | Max tokens to inject |
-| `--tags <TAGS>` | Filter by tags |
-| `--recent <DAYS>` | Only last N days |
-
-**Examples:**
-
-```bash
-# Add a pattern memory
-ralph tools memory add "Uses barrel exports" -t pattern --tags structure
-
-# Search for fixes
-ralph tools memory search -t fix "database"
-
-# List recent memories
-ralph tools memory list --last 10
-
-# Show memory details
-ralph tools memory show mem-1737372000-a1b2
-
-# Delete a memory
-ralph tools memory delete mem-1737372000-a1b2
-```
+| `prime` | Prime context memory output |
 
 #### ralph tools task
-
-Manage runtime tasks.
 
 ```bash
 ralph tools task <SUBCOMMAND>
@@ -368,49 +322,42 @@ ralph tools task <SUBCOMMAND>
 
 | Command | Description |
 |---------|-------------|
-| `add <TITLE>` | Add a new task |
+| `add <TITLE>` | Create a task |
 | `list` | List all tasks |
 | `ready` | List unblocked tasks |
-| `close <ID>` | Close a task |
+| `close <ID>` | Mark task complete |
+| `fail <ID>` | Mark task failed |
+| `show <ID>` | Show task details |
 
-**Add Options:**
-
-| Option | Description |
-|--------|-------------|
-| `-p, --priority <N>` | Priority 1-5 (1 = highest) |
-| `--blocked-by <ID>` | Task ID this is blocked by |
-
-**Examples:**
+#### ralph tools skill
 
 ```bash
-# Add a task
-ralph tools task add "Implement authentication"
-
-# Add with priority
-ralph tools task add "Fix critical bug" -p 1
-
-# Add with dependency
-ralph tools task add "Deploy" --blocked-by setup-infra
-
-# List all tasks
-ralph tools task list
-
-# List ready tasks
-ralph tools task ready
-
-# Close a task
-ralph tools task close task-123
+ralph tools skill <SUBCOMMAND>
 ```
+
+#### ralph tools interact
+
+Interact with human via Telegram progress/proactiveness hooks.
+
+### ralph completions
+
+Generate shell completions.
+
+```bash
+ralph completions <SHELL>
+```
+
+Supported shells: `bash`, `elvish`, `fish`, `powershell`, `zsh`.
 
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success |
-| 1 | General error |
-| 2 | Configuration error |
-| 3 | Backend not found |
-| 4 | Interrupted |
+| 0 | Completion promise reached (`LOOP_COMPLETE`) |
+| 1 | Failure or stop condition (failure/cancelled/throttled state) |
+| 2 | Runtime limits reached (`max-iterations`, `max-runtime`, or `max-cost`) |
+| 3 | Loop requested restart |
+| 130 | Interrupted by signal (Ctrl-C / SIGINT) |
 
 ## Environment Variables
 

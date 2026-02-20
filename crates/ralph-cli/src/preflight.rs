@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, ValueEnum};
 use ralph_core::{CheckResult, CheckStatus, PreflightReport, PreflightRunner, RalphConfig};
-use std::path::PathBuf;
 use tracing::{info, warn};
 
 use crate::{ConfigSource, presets};
@@ -218,7 +217,7 @@ pub(crate) async fn load_config_for_preflight(
                 let preset = presets::get_preset(name).ok_or_else(|| {
                     let available = presets::preset_names().join(", ");
                     anyhow::anyhow!(
-                        "Unknown preset '{}'. Run `ralph init --list-presets` to see available presets.\n\nAvailable: {}",
+                        "Unknown preset '{}'. Run `ralph init --list-presets` to see available presets, then retry with `-c builtin:<name>`.\n\nAvailable: {}",
                         name,
                         available
                     )
@@ -251,12 +250,16 @@ pub(crate) async fn load_config_for_preflight(
             ConfigSource::Override { .. } => unreachable!("Partitioned out overrides"),
         }
     } else {
-        let default_path = PathBuf::from("ralph.yml");
+        let default_path = crate::default_config_path();
         if default_path.exists() {
-            RalphConfig::from_file(&default_path)
-                .with_context(|| "Failed to load config from ralph.yml")?
+            RalphConfig::from_file(&default_path).with_context(|| {
+                format!("Failed to load config from {}", default_path.display())
+            })?
         } else {
-            warn!("Config file ralph.yml not found, using defaults");
+            warn!(
+                "Config file {} not found, using defaults",
+                default_path.display()
+            );
             RalphConfig::default()
         }
     };
@@ -280,7 +283,9 @@ pub(crate) fn config_source_label(config_sources: &[ConfigSource]) -> String {
         Some(ConfigSource::File(path)) => path.display().to_string(),
         Some(ConfigSource::Builtin(name)) => format!("builtin:{}", name),
         Some(ConfigSource::Remote(url)) => url.clone(),
-        Some(ConfigSource::Override { .. }) | None => "ralph.yml".to_string(),
+        Some(ConfigSource::Override { .. }) | None => {
+            crate::default_config_path().to_string_lossy().to_string()
+        }
     }
 }
 
@@ -312,8 +317,9 @@ mod tests {
 
     #[test]
     fn config_source_label_handles_sources() {
-        let file_label =
-            config_source_label(&[ConfigSource::File(PathBuf::from("/tmp/ralph.yml"))]);
+        let file_label = config_source_label(&[ConfigSource::File(std::path::PathBuf::from(
+            "/tmp/ralph.yml",
+        ))]);
         assert_eq!(file_label, "/tmp/ralph.yml");
 
         let builtin_label = config_source_label(&[ConfigSource::Builtin("starter".to_string())]);

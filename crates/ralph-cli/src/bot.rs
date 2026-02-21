@@ -13,7 +13,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
-use crate::ConfigSource;
+use crate::{ConfigSource, HatsSource};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI STRUCTS
@@ -94,6 +94,7 @@ pub struct DaemonArgs {}
 pub async fn execute(
     args: BotArgs,
     config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
     use_colors: bool,
 ) -> Result<()> {
     match args.command {
@@ -102,7 +103,7 @@ pub async fn execute(
         BotCommands::Test(test_args) => bot_test(test_args, use_colors).await,
         BotCommands::Token(token_args) => bot_token(token_args, use_colors),
         BotCommands::Daemon(daemon_args) => {
-            run_daemon(daemon_args, config_sources, use_colors).await
+            run_daemon(daemon_args, config_sources, hats_source, use_colors).await
         }
     }
 }
@@ -485,6 +486,7 @@ async fn bot_test(args: TestArgs, use_colors: bool) -> Result<()> {
 async fn run_daemon(
     _args: DaemonArgs,
     config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
     use_colors: bool,
 ) -> Result<()> {
     use ralph_proto::DaemonAdapter;
@@ -502,8 +504,8 @@ async fn run_daemon(
     let has_overrides = config_sources
         .iter()
         .any(|s| matches!(s, ConfigSource::Override { .. }));
-    if has_overrides {
-        warn!("Config overrides will be resolved into a temporary runtime config.");
+    if has_overrides || hats_source.is_some() {
+        warn!("Config overrides/hats will be resolved into a temporary runtime config.");
     }
 
     let direct_file = if let Some(ConfigSource::File(path)) = primary_sources.first() {
@@ -517,7 +519,7 @@ async fn run_daemon(
             anyhow::bail!("Config file not found: {}", path.display());
         }
 
-        if has_overrides {
+        if has_overrides || hats_source.is_some() {
             None
         } else {
             let config = RalphConfig::from_file(&path)
@@ -534,7 +536,7 @@ async fn run_daemon(
     let (config, config_path) = if let Some((config, path)) = direct_file {
         (config, path)
     } else {
-        let config = crate::preflight::load_config_for_preflight(config_sources)
+        let config = crate::preflight::load_config_for_preflight(config_sources, hats_source)
             .await
             .context("Failed to load config for bot daemon")?;
         let path = write_temp_config_for_daemon(&workspace_root, &config)
@@ -1118,7 +1120,7 @@ mod tests {
     async fn test_run_daemon_rejects_builtin_config() {
         let sources = vec![ConfigSource::Builtin("tdd".to_string())];
 
-        let err = run_daemon(DaemonArgs {}, &sources, false)
+        let err = run_daemon(DaemonArgs {}, &sources, None, false)
             .await
             .expect_err("expected daemon setup error");
         assert!(
@@ -1135,7 +1137,7 @@ mod tests {
             "https://example.com/ralph.yml".to_string(),
         )];
 
-        let err = run_daemon(DaemonArgs {}, &sources, false)
+        let err = run_daemon(DaemonArgs {}, &sources, None, false)
             .await
             .expect_err("expected remote config error");
         assert!(
@@ -1151,7 +1153,7 @@ mod tests {
         let _cwd = CwdGuard::set(temp_dir.path());
 
         let sources = vec![ConfigSource::File(PathBuf::from("missing.yml"))];
-        let err = run_daemon(DaemonArgs {}, &sources, false)
+        let err = run_daemon(DaemonArgs {}, &sources, None, false)
             .await
             .expect_err("expected missing config error");
         assert!(

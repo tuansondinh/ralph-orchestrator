@@ -1624,9 +1624,38 @@ fn process_pending_merges_with_command(repo_root: &Path, ralph_cmd: &OsStr) {
         }
     };
 
-    // Write the merge config once (shared by all merge loops)
+    // Write a core-only merge config once (shared by all merge loops).
+    let mut core_value: serde_yaml::Value = match serde_yaml::from_str(preset.content) {
+        Ok(value) => value,
+        Err(e) => {
+            warn!(
+                error = %e,
+                "Failed to parse merge-loop preset, pending merges will remain queued"
+            );
+            return;
+        }
+    };
+
+    if let Some(mapping) = core_value.as_mapping_mut() {
+        let hats_key = serde_yaml::Value::String("hats".to_string());
+        let events_key = serde_yaml::Value::String("events".to_string());
+        mapping.remove(&hats_key);
+        mapping.remove(&events_key);
+    }
+
+    let core_yaml = match serde_yaml::to_string(&core_value) {
+        Ok(yaml) => yaml,
+        Err(e) => {
+            warn!(
+                error = %e,
+                "Failed to serialize core-only merge config, pending merges will remain queued"
+            );
+            return;
+        }
+    };
+
     let config_path = repo_root.join(".ralph/merge-loop-config.yml");
-    if let Err(e) = fs::write(&config_path, preset.content) {
+    if let Err(e) = fs::write(&config_path, core_yaml) {
         warn!(
             error = %e,
             "Failed to write merge config, pending merges will remain queued"
@@ -1646,6 +1675,8 @@ fn process_pending_merges_with_command(repo_root: &Path, ralph_cmd: &OsStr) {
                 "run",
                 "-c",
                 ".ralph/merge-loop-config.yml",
+                "-H",
+                "builtin:merge-loop",
                 "--exclusive",
                 "--no-tui",
                 "-p",

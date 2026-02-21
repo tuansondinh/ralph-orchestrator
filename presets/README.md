@@ -5,11 +5,14 @@ Pre-configured hat collections for common workflows.
 ## Quick Start
 
 ```bash
-# Use a preset directly
-ralph start --config presets/research.yml --prompt "How does auth work?"
+# Create core config once
+ralph init --backend claude
 
-# Or copy to your project root and customize
-cp presets/feature.yml ralph.yml
+# Use a built-in hat collection
+ralph run -c ralph.yml -H builtin:research -p "How does auth work?"
+
+# Switch collections without touching core settings
+ralph run -c ralph.yml -H builtin:feature
 ```
 
 ## Available Presets

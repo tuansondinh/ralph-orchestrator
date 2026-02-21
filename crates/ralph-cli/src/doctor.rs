@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 
-use crate::ConfigSource;
+use crate::{ConfigSource, HatsSource};
 
 /// Run first-run diagnostics and environment validation.
 #[derive(Parser, Debug)]
@@ -18,11 +18,12 @@ pub struct DoctorArgs {}
 
 pub async fn execute(
     config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
     _args: DoctorArgs,
     use_colors: bool,
 ) -> Result<()> {
-    let source_label = crate::preflight::config_source_label(config_sources);
-    let config = crate::preflight::load_config_for_preflight(config_sources).await?;
+    let source_label = crate::preflight::config_source_label(config_sources, hats_source);
+    let config = crate::preflight::load_config_for_preflight(config_sources, hats_source).await?;
 
     let runner = ralph_core::PreflightRunner::default_checks();
     let preflight_report = runner.run_all(&config).await;

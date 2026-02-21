@@ -194,13 +194,15 @@ fn override_backend_in_yaml(content: &str, backend: &str) -> Result<String, Init
 
 /// Formats the list of presets for display.
 pub fn format_preset_list() -> String {
-    let mut output = String::from("Available presets:\n\n");
+    let mut output = String::from("Available hat collections:\n\n");
 
     for preset in list_presets() {
         output.push_str(&format!("  {:<25} {}\n", preset.name, preset.description));
     }
 
-    output.push_str("\nUsage: ralph init --preset <preset-name>\n");
+    output.push_str("\nUsage:\n");
+    output.push_str("  ralph init --backend <backend>\n");
+    output.push_str("  ralph run -c ralph.yml -H builtin:<collection>\n");
     output
 }
 
@@ -241,11 +243,12 @@ mod tests {
     #[test]
     fn test_format_preset_list() {
         let output = format_preset_list();
-        assert!(output.contains("Available presets:"));
+        assert!(output.contains("Available hat collections:"));
         assert!(output.contains("feature"));
         assert!(output.contains("code-assist"));
         assert!(output.contains("debug"));
         assert!(output.contains("Usage:"));
+        assert!(output.contains("-H builtin:<collection>"));
     }
 
     #[test]

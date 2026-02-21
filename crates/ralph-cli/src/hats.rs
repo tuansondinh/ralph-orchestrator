@@ -8,7 +8,7 @@
 
 use crate::backend_support;
 use crate::preflight;
-use crate::ConfigSource;
+use crate::{ConfigSource, HatsSource};
 use crate::display::colors;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -79,10 +79,11 @@ pub struct ShowArgs {
 /// Execute a hats command.
 pub async fn execute(
     config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
     args: HatsArgs,
     use_colors: bool,
 ) -> Result<()> {
-    let config = preflight::load_config_for_preflight(config_sources)
+    let config = preflight::load_config_for_preflight(config_sources, hats_source)
         .await
         .context("Failed to load config for hats")?;
 

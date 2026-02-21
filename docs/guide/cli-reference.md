@@ -8,29 +8,31 @@ These options are accepted by all commands.
 
 | Option | Description |
 |--------|-------------|
-| `-c, --config <SOURCE>` | Config source (can be specified multiple times). Defaults to `ralph.yml`, or `$RALPH_CONFIG` when set. |
+| `-c, --config <SOURCE>` | Core config source (can be specified multiple times). Defaults to `ralph.yml`, or `$RALPH_CONFIG` when set. |
+| `-H, --hats <SOURCE>` | Hat collection source (`file`, `builtin:<name>`, or URL). |
 | `-v, --verbose` | Verbose output |
 | `--color <MODE>` | Color output: `auto`, `always`, `never` |
 | `-h, --help` | Show help |
 | `-V, --version` | Show version |
 
-### Config Sources (`-c`)
+### Core Config Sources (`-c`)
 
-The `-c` flag specifies where to load configuration from. If not provided, `ralph` falls back to:
+The `-c` flag specifies where to load **core** configuration from. If not provided, `ralph` falls back to:
 
 1. `$RALPH_CONFIG` when present
 2. `ralph.yml`
 
-**Config source types:**
+**Core source types:**
 
 | Format | Description |
 |--------|-------------|
 | `ralph.yml` | Local file path |
-| `builtin:<name>` | Embedded preset |
-| `https://example.com/config.yml` | Remote URL |
+| `https://example.com/ralph.core.yml` | Remote URL |
 | `core.field=value` | Core config override |
 
-The first non-override source is used as the base config. Later core overrides replace earlier values.
+> `-c builtin:<name>` is no longer supported. Use `-H builtin:<name>` for hat collections.
+
+The first non-override core source is used as the base config. Later core overrides replace earlier values.
 
 **Supported override fields:**
 
@@ -39,26 +41,31 @@ The first non-override source is used as the base config. Later core overrides r
 | `core.scratchpad` | Path to scratchpad file |
 | `core.specs_dir` | Path to specs directory |
 
+### Hat Collection Sources (`-H`)
+
+The `-H` flag specifies where to load hat collections from.
+
+| Format | Description |
+|--------|-------------|
+| `hats/feature.yml` | Local hats file |
+| `builtin:feature` | Built-in hat collection |
+| `https://example.com/hats.yml` | Remote hats file |
+
 **Examples:**
 
 ```bash
-# Use custom config file
-ralph run -c production.yml
+# Core only (hatless)
+ralph run -c ralph.yml
 
-# Use embedded preset
-ralph run -c builtin:tdd-red-green
+# Core + built-in hat collection
+ralph run -c ralph.yml -H builtin:feature
 
-# Override scratchpad (loads default config + applies override)
-ralph run -c core.scratchpad=.ralph/agent/feature-x/scratchpad.md
+# Core + file hat collection
+ralph run -c ralph.yml -H hats/review.yml
 
-# Explicit config + override
-ralph run -c ralph.yml -c core.scratchpad=.ralph/agent/feature-x/scratchpad.md
-
-# Multiple overrides
-ralph run -c core.scratchpad=.runs/task-123/scratchpad.md -c core.specs_dir=./my-specs/
+# Core override + hats
+ralph run -c ralph.yml -c core.specs_dir=./my-specs -H builtin:debug
 ```
-
-Overrides are applied after config load, so they take precedence.
 
 ## Commands
 
@@ -102,8 +109,8 @@ ralph init [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--backend <NAME>` | Backend: `claude`, `kiro`, `gemini`, `codex`, `amp`, `copilot`, `opencode`, `pi`, `custom` |
-| `--preset <NAME>` | Use preset configuration |
-| `--list-presets` | List available presets |
+| `--preset <NAME>` | Removed (monolithic presets no longer supported) |
+| `--list-presets` | List available built-in hat collections |
 | `--force` | Overwrite existing config |
 
 ### ralph preflight
@@ -269,9 +276,10 @@ ralph web [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
-| `--backend-port <BACKEND_PORT>` | Backend port (default: 3000) |
+| `--backend-port <BACKEND_PORT>` | RPC API port (default: 3000) |
 | `--frontend-port <FRONTEND_PORT>` | Frontend port (default: 5173) |
 | `--workspace <WORKSPACE>` | Workspace root |
+| `--legacy-node-api` | Run deprecated Node tRPC backend instead of Rust RPC API |
 | `--no-open` | Do not open browser |
 
 ### ralph bot

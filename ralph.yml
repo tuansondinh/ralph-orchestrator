@@ -134,5 +134,5 @@ skills:
     ralph-operations:
       auto_inject: true
 RObot:
-  enabled: true
+  enabled: false
   timeout_seconds: 120

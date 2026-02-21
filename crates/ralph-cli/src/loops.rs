@@ -981,11 +981,22 @@ fn merge_loop(args: MergeArgs) -> Result<()> {
 
 /// Helper to spawn merge-ralph
 fn spawn_merge_ralph(cwd: &std::path::Path, loop_id: &str) -> Result<()> {
-    // Get the merge-loop preset and write to config file
+    // Get the merge-loop preset and write a core-only config file.
     let preset = crate::presets::get_preset("merge-loop").context("merge-loop preset not found")?;
 
+    let mut core_value: serde_yaml::Value =
+        serde_yaml::from_str(preset.content).context("Failed to parse merge-loop preset YAML")?;
+    if let Some(mapping) = core_value.as_mapping_mut() {
+        let hats_key = serde_yaml::Value::String("hats".to_string());
+        let events_key = serde_yaml::Value::String("events".to_string());
+        mapping.remove(&hats_key);
+        mapping.remove(&events_key);
+    }
+    let core_yaml = serde_yaml::to_string(&core_value)
+        .context("Failed to serialize core-only merge-loop config")?;
+
     let config_path = cwd.join(".ralph/merge-loop-config.yml");
-    std::fs::write(&config_path, preset.content).context("Failed to write merge config file")?;
+    std::fs::write(&config_path, core_yaml).context("Failed to write merge config file")?;
 
     // Spawn merge-ralph
     println!("Spawning merge-ralph for loop '{}'...", loop_id);
@@ -995,6 +1006,8 @@ fn spawn_merge_ralph(cwd: &std::path::Path, loop_id: &str) -> Result<()> {
             "run",
             "-c",
             ".ralph/merge-loop-config.yml",
+            "-H",
+            "builtin:merge-loop",
             "--exclusive",
             "-p",
             &format!("Merge loop {} from branch ralph/{}", loop_id, loop_id),

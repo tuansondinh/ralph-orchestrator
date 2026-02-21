@@ -1,5 +1,5 @@
 // ABOUTME: Web dashboard development server launcher.
-// ABOUTME: Provides the `ralph web` command that runs backend and frontend dev servers in parallel.
+// ABOUTME: Provides the `ralph web` command that runs Rust RPC API + frontend (legacy Node backend optional).
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -27,7 +27,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Arguments for the web subcommand
 #[derive(Parser, Debug)]
 pub struct WebArgs {
-    /// Backend port (default: 3000)
+    /// RPC API port (default: 3000)
     #[arg(long, default_value = "3000")]
     pub backend_port: u16,
 
@@ -38,6 +38,10 @@ pub struct WebArgs {
     /// Workspace root directory (default: current directory)
     #[arg(long)]
     pub workspace: Option<PathBuf>,
+
+    /// Use deprecated Node tRPC backend instead of Rust RPC API
+    #[arg(long)]
+    pub legacy_node_api: bool,
 
     /// Don't open the dashboard in the default browser
     #[arg(long)]
@@ -182,10 +186,12 @@ fn check_tsx_version_with(backend_dir: &Path, npx_cmd: &OsStr) -> Result<()> {
     Ok(())
 }
 
-/// Run pre-flight checks: verify Node.js/npm, check tsx, and auto-install dependencies.
+/// Run pre-flight checks: verify Node.js/npm and install frontend dependencies.
+/// In legacy mode, also validates tsx backend tooling.
 async fn preflight_with(
     root: &Path,
     backend_dir: &Path,
+    legacy_node_api: bool,
     node_cmd: &OsStr,
     npm_cmd: &OsStr,
     npx_cmd: &OsStr,
@@ -203,15 +209,18 @@ async fn preflight_with(
         run_npm_install_with(root, npm_cmd).await?;
     }
 
-    check_tsx_version_with(backend_dir, npx_cmd)?;
+    if legacy_node_api {
+        check_tsx_version_with(backend_dir, npx_cmd)?;
+    }
 
     Ok(())
 }
 
-async fn preflight(root: &Path, backend_dir: &Path) -> Result<()> {
+async fn preflight(root: &Path, backend_dir: &Path, legacy_node_api: bool) -> Result<()> {
     preflight_with(
         root,
         backend_dir,
+        legacy_node_api,
         OsStr::new("node"),
         OsStr::new("npm"),
         OsStr::new("npx"),
@@ -283,8 +292,15 @@ pub async fn execute(args: WebArgs) -> Result<()> {
     let backend_dir = workspace_root.join("backend/ralph-web-server");
     let frontend_dir = workspace_root.join("frontend/ralph-web");
 
-    // Verify Node.js/npm, check tsx version, and auto-install dependencies if needed
-    preflight(&workspace_root, &backend_dir).await?;
+    if args.legacy_node_api && !backend_dir.join("package.json").exists() {
+        anyhow::bail!(
+            "Legacy Node backend not found at {}",
+            backend_dir.join("package.json").display()
+        );
+    }
+
+    // Verify frontend Node.js/npm tooling, install deps, and legacy tsx checks when requested.
+    preflight(&workspace_root, &backend_dir, args.legacy_node_api).await?;
 
     // Check ports before spawning anything
     check_port_available(args.backend_port)?;
@@ -292,27 +308,48 @@ pub async fn execute(args: WebArgs) -> Result<()> {
 
     println!("Using workspace: {}", workspace_root.display());
 
-    // Spawn backend server with piped output
-    // Pass RALPH_WORKSPACE_ROOT so the backend knows where to spawn ralph run from
-    // Pass PORT so the backend listens on the configured port
-    let mut backend = AsyncCommand::new("npm")
-        .args(["run", "dev"])
-        .current_dir(&backend_dir)
-        .env("RALPH_WORKSPACE_ROOT", &workspace_root)
-        .env("PORT", args.backend_port.to_string())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to start backend server. Is npm installed and {} set up?\nError: {}",
-                backend_dir.join("package.json").display(),
-                e
-            )
-        })?;
+    // Spawn backend (default Rust RPC API, optional legacy Node backend) and frontend.
+    let backend_label = if args.legacy_node_api { "backend" } else { "api" };
+    let backend_ready_pattern = if args.legacy_node_api {
+        "Server started on"
+    } else {
+        "ralph-api listening"
+    };
 
-    // Spawn frontend server with piped output
-    // Pass --port for Vite and RALPH_BACKEND_PORT for proxy config
+    let mut backend = if args.legacy_node_api {
+        AsyncCommand::new("npm")
+            .args(["run", "dev"])
+            .current_dir(&backend_dir)
+            .env("RALPH_WORKSPACE_ROOT", &workspace_root)
+            .env("PORT", args.backend_port.to_string())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to start legacy backend server. Is npm installed and {} set up?\nError: {}",
+                    backend_dir.join("package.json").display(),
+                    e
+                )
+            })?
+    } else {
+        AsyncCommand::new("cargo")
+            .args(["run", "-p", "ralph-api"])
+            .current_dir(&workspace_root)
+            .env("RALPH_API_PORT", args.backend_port.to_string())
+            .env("RALPH_API_WORKSPACE_ROOT", &workspace_root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to start Rust RPC API (cargo run -p ralph-api).\nError: {}",
+                    e
+                )
+            })?
+    };
+
+    // Pass --port for Vite and RALPH_BACKEND_PORT for proxy config.
     let mut frontend = AsyncCommand::new("npm")
         .args([
             "run",
@@ -334,24 +371,24 @@ pub async fn execute(args: WebArgs) -> Result<()> {
             )
         })?;
 
-    // Take ownership of stdout/stderr pipes
+    // Take ownership of stdout/stderr pipes.
     let backend_stdout = backend.stdout.take().expect("backend stdout piped");
     let backend_stderr = backend.stderr.take().expect("backend stderr piped");
     let frontend_stdout = frontend.stdout.take().expect("frontend stdout piped");
     let frontend_stderr = frontend.stderr.take().expect("frontend stderr piped");
 
-    // Set up ready detection
+    // Set up ready detection.
     let backend_ready = std::sync::Arc::new(Notify::new());
     let frontend_ready = std::sync::Arc::new(Notify::new());
 
-    // Spawn output forwarding tasks
+    // Spawn output forwarding tasks.
     let backend_ready_clone = backend_ready.clone();
     tokio::spawn(async move {
         forward_output(
             backend_stdout,
             backend_stderr,
-            "backend",
-            "Server started on",
+            backend_label,
+            backend_ready_pattern,
             backend_ready_clone,
         )
         .await;
@@ -700,6 +737,7 @@ mod tests {
         preflight_with(
             &root,
             &backend_dir,
+            true,
             node_path.as_os_str(),
             npm_path.as_os_str(),
             npx_path.as_os_str(),
@@ -735,6 +773,7 @@ exit 1",
         preflight_with(
             &root,
             &backend_dir,
+            true,
             node_path.as_os_str(),
             npm_path.as_os_str(),
             npx_path.as_os_str(),
@@ -768,6 +807,7 @@ exit 1",
         let err = preflight_with(
             &root,
             &backend_dir,
+            true,
             node_path.as_os_str(),
             npm_path.as_os_str(),
             npx_path.as_os_str(),
@@ -915,6 +955,7 @@ exit 1",
             backend_port: 3000,
             frontend_port: 5173,
             workspace: Some(missing),
+            legacy_node_api: false,
             no_open: true,
         };
 

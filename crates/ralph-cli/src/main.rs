@@ -245,25 +245,27 @@ pub enum OutputFormat {
 use display::colors;
 use display::truncate;
 
-/// Source for configuration: file path, builtin preset, remote URL, or config override.
+/// Source for core configuration.
 #[derive(Debug, Clone)]
 pub enum ConfigSource {
     /// Local file path (default behavior)
     File(PathBuf),
-    /// Builtin preset name (e.g., "builtin:feature")
+    /// Legacy builtin preset source (no longer valid for core config).
+    ///
+    /// Kept so we can emit actionable migration errors.
     Builtin(String),
-    /// Remote URL (e.g., "http://example.com/preset.yml")
+    /// Remote URL (e.g., "http://example.com/ralph.core.yml")
     Remote(String),
     /// Config override (e.g., "core.scratchpad=.ralph/feature/scratchpad.md")
     Override { key: String, value: String },
 }
 
 impl ConfigSource {
-    /// Parse a config source string into its variant.
+    /// Parse a core config source string into its variant.
     ///
     /// Format:
     /// - `core.field=value` → Override (for core.* fields)
-    /// - `builtin:preset-name` → Builtin preset
+    /// - `builtin:preset-name` → Legacy builtin preset (rejected with migration message)
     /// - `http://...` or `https://...` → Remote URL
     /// - Anything else → File path
     fn parse(s: &str) -> Self {
@@ -277,13 +279,46 @@ impl ConfigSource {
                 value: value.to_string(),
             };
         }
-        // Existing logic unchanged
+
         if let Some(name) = s.strip_prefix("builtin:") {
             ConfigSource::Builtin(name.to_string())
         } else if s.starts_with("http://") || s.starts_with("https://") {
             ConfigSource::Remote(s.to_string())
         } else {
             ConfigSource::File(PathBuf::from(s))
+        }
+    }
+}
+
+/// Source for hat collection configuration.
+#[derive(Debug, Clone)]
+pub enum HatsSource {
+    /// Local file path
+    File(PathBuf),
+    /// Builtin hat collection name (e.g., "builtin:feature")
+    Builtin(String),
+    /// Remote URL (e.g., "http://example.com/hats.yml")
+    Remote(String),
+}
+
+impl HatsSource {
+    /// Parse a hats source string into its variant.
+    fn parse(s: &str) -> Self {
+        if let Some(name) = s.strip_prefix("builtin:") {
+            HatsSource::Builtin(name.to_string())
+        } else if s.starts_with("http://") || s.starts_with("https://") {
+            HatsSource::Remote(s.to_string())
+        } else {
+            HatsSource::File(PathBuf::from(s))
+        }
+    }
+
+    /// Human-readable source label.
+    pub fn label(&self) -> String {
+        match self {
+            HatsSource::File(path) => path.display().to_string(),
+            HatsSource::Builtin(name) => format!("builtin:{}", name),
+            HatsSource::Remote(url) => url.clone(),
         }
     }
 }
@@ -398,11 +433,17 @@ struct Cli {
     // ─────────────────────────────────────────────────────────────────────────
     // Global options (available for all subcommands)
     // ─────────────────────────────────────────────────────────────────────────
-    /// Configuration source: file path, builtin:preset, URL, or core.field=value override.
-    /// Can be specified multiple times. Overrides are applied after config file loading.
+    /// Core configuration source: file path, URL, or core.field=value override.
+    /// Can be specified multiple times. Overrides are applied after core config loading.
     /// If not set, defaults to `ralph.yml` or `$RALPH_CONFIG`.
     #[arg(short, long, global = true, action = ArgAction::Append)]
     config: Vec<String>,
+
+    /// Hat collection source: file path, builtin:name, or URL.
+    ///
+    /// Example: `-H builtin:feature` or `-H .ralph/hats/feature.yml`
+    #[arg(short = 'H', long, global = true)]
+    hats: Option<String>,
 
     /// Verbose output
     #[arg(short, long, global = true)]
@@ -424,7 +465,7 @@ enum Commands {
     /// Run first-run diagnostics and environment checks
     Doctor(doctor::DoctorArgs),
 
-    /// Interactive walkthrough of hats, presets, and workflow
+    /// Interactive walkthrough of hats, hat collections, and workflow
     Tutorial(TutorialArgs),
 
     /// DEPRECATED: Use `ralph run --continue` instead.
@@ -477,16 +518,19 @@ enum Commands {
 #[derive(Parser, Debug)]
 struct InitArgs {
     /// Backend to use (claude, kiro, gemini, codex, amp, copilot, opencode, pi, custom).
-    /// When used alone, generates minimal config.
-    /// When used with --preset, overrides the preset's backend.
+    /// Generates core config only.
     #[arg(long, conflicts_with = "list_presets")]
     backend: Option<String>,
 
-    /// Copy embedded preset to ralph.yml
-    #[arg(long, conflicts_with = "list_presets")]
+    /// REMOVED: monolithic presets are no longer supported.
+    ///
+    /// Use split config instead:
+    ///   ralph init --backend <backend>
+    ///   ralph run -c ralph.yml -H builtin:<collection>
+    #[arg(long, conflicts_with = "list_presets", conflicts_with = "backend")]
     preset: Option<String>,
 
-    /// List all available embedded presets
+    /// List all available builtin hat collections
     #[arg(long, conflicts_with = "backend", conflicts_with = "preset")]
     list_presets: bool,
 
@@ -878,36 +922,74 @@ async fn main() -> Result<()> {
 
     let config_sources: Vec<ConfigSource> =
         config_values.iter().map(|s| ConfigSource::parse(s)).collect();
+    let hats_source = cli.hats.as_deref().map(HatsSource::parse);
 
     match cli.command {
         Some(Commands::Run(args)) => {
-            run_command(&config_sources, cli.verbose, cli.color, args).await
+            run_command(&config_sources, hats_source.as_ref(), cli.verbose, cli.color, args).await
         }
         Some(Commands::Preflight(args)) => {
-            preflight::execute(&config_sources, args, cli.color.should_use_colors()).await
+            preflight::execute(
+                &config_sources,
+                hats_source.as_ref(),
+                args,
+                cli.color.should_use_colors(),
+            )
+            .await
         }
         Some(Commands::Doctor(args)) => {
-            doctor::execute(&config_sources, args, cli.color.should_use_colors()).await
+            doctor::execute(
+                &config_sources,
+                hats_source.as_ref(),
+                args,
+                cli.color.should_use_colors(),
+            )
+            .await
         }
         Some(Commands::Tutorial(args)) => tutorial_command(cli.color, args),
         Some(Commands::Resume(args)) => {
-            resume_command(&config_sources, cli.verbose, cli.color, args).await
+            resume_command(
+                &config_sources,
+                hats_source.as_ref(),
+                cli.verbose,
+                cli.color,
+                args,
+            )
+            .await
         }
         Some(Commands::Events(args)) => events_command(cli.color, args),
         Some(Commands::Init(args)) => init_command(cli.color, args),
         Some(Commands::Clean(args)) => clean_command(&config_sources, cli.color, args),
         Some(Commands::Emit(args)) => emit_command(cli.color, args),
-        Some(Commands::Plan(args)) => plan_command(&config_sources, cli.color, args).await,
-        Some(Commands::CodeTask(args)) => code_task_command(&config_sources, cli.color, args).await,
-        Some(Commands::Task(args)) => code_task_command(&config_sources, cli.color, args).await,
+        Some(Commands::Plan(args)) => {
+            plan_command(&config_sources, hats_source.as_ref(), cli.color, args).await
+        }
+        Some(Commands::CodeTask(args)) => {
+            code_task_command(&config_sources, hats_source.as_ref(), cli.color, args).await
+        }
+        Some(Commands::Task(args)) => {
+            code_task_command(&config_sources, hats_source.as_ref(), cli.color, args).await
+        }
         Some(Commands::Tools(args)) => tools::execute(args, cli.color.should_use_colors()).await,
         Some(Commands::Loops(args)) => loops::execute(args, cli.color.should_use_colors()),
         Some(Commands::Hats(args)) => {
-            hats::execute(&config_sources, args, cli.color.should_use_colors()).await
+            hats::execute(
+                &config_sources,
+                hats_source.as_ref(),
+                args,
+                cli.color.should_use_colors(),
+            )
+            .await
         }
         Some(Commands::Web(args)) => web::execute(args).await,
         Some(Commands::Bot(args)) => {
-            bot::execute(args, &config_sources, cli.color.should_use_colors()).await
+            bot::execute(
+                args,
+                &config_sources,
+                hats_source.as_ref(),
+                cli.color.should_use_colors(),
+            )
+            .await
         }
         Some(Commands::Completions(args)) => completions_command(args),
         None => {
@@ -931,7 +1013,14 @@ async fn main() -> Result<()> {
                 record_session: None,
                 custom_args: Vec::new(),
             };
-            run_command(&config_sources, cli.verbose, cli.color, args).await
+            run_command(
+                &config_sources,
+                hats_source.as_ref(),
+                cli.verbose,
+                cli.color,
+                args,
+            )
+            .await
         }
     }
 }
@@ -1095,96 +1184,12 @@ fn print_preflight_summary(
 
 async fn run_command(
     config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
     verbose: bool,
     color_mode: ColorMode,
     args: RunArgs,
 ) -> Result<()> {
-    // Partition sources: file/builtin/remote sources vs overrides
-    let (primary_sources, overrides): (Vec<_>, Vec<_>) = config_sources
-        .iter()
-        .partition(|s| !matches!(s, ConfigSource::Override { .. }));
-
-    // Warn if multiple config sources are specified
-    if primary_sources.len() > 1 {
-        warn!("Multiple config sources specified, using first one. Others ignored.");
-    }
-
-    // Load configuration based on first primary source, or default if only overrides
-    let mut config = if let Some(source) = primary_sources.first() {
-        match source {
-            ConfigSource::File(path) => {
-                if path.exists() {
-                    RalphConfig::from_file(path)
-                        .with_context(|| format!("Failed to load config from {:?}", path))?
-                } else {
-                    warn!("Config file {:?} not found, using defaults", path);
-                    RalphConfig::default()
-                }
-            }
-            ConfigSource::Builtin(name) => {
-                let preset = presets::get_preset(name).ok_or_else(|| {
-                    let available = presets::preset_names().join(", ");
-                    anyhow::anyhow!(
-                        "Unknown preset '{}'. Run `ralph init --list-presets` to see available presets, then retry with `-c builtin:<name>`.\n\nAvailable: {}",
-                        name,
-                        available
-                    )
-                })?;
-                RalphConfig::parse_yaml(preset.content)
-                    .with_context(|| format!("Failed to parse builtin preset '{}'", name))?
-            }
-            ConfigSource::Remote(url) => {
-                info!("Fetching config from {}", url);
-                let response = reqwest::get(url)
-                    .await
-                    .with_context(|| format!("Failed to fetch config from {}", url))?;
-
-                if !response.status().is_success() {
-                    anyhow::bail!(
-                        "Failed to fetch config from {}: HTTP {}",
-                        url,
-                        response.status()
-                    );
-                }
-
-                let content = response
-                    .text()
-                    .await
-                    .with_context(|| format!("Failed to read config content from {}", url))?;
-
-                RalphConfig::parse_yaml(&content)
-                    .with_context(|| format!("Failed to parse config from {}", url))?
-            }
-            ConfigSource::Override { .. } => unreachable!("Partitioned out overrides"),
-        }
-    } else {
-        // Only overrides specified - load default config path as base
-        let default_path = default_config_path();
-        if default_path.exists() {
-            RalphConfig::from_file(&default_path).with_context(|| {
-                format!("Failed to load config from {}", default_path.display())
-            })?
-        } else {
-            warn!(
-                "Config file {} not found, using defaults",
-                default_path.display()
-            );
-            RalphConfig::default()
-        }
-    };
-
-    // Normalize v1 flat fields into v2 nested structure
-    config.normalize();
-
-    // Set workspace_root to current directory (critical for E2E tests in isolated workspaces).
-    // This must happen after config load because workspace_root has #[serde(skip)] and
-    // defaults to cwd at deserialize time - but we need it set to the actual runtime cwd.
-    config.core.workspace_root =
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-    // Apply CLI config overrides (takes precedence over config file values)
-    let override_sources: Vec<_> = overrides.into_iter().cloned().collect();
-    apply_config_overrides(&mut config, &override_sources)?;
+    let mut config = preflight::load_config_for_preflight(config_sources, hats_source).await?;
 
     // Handle --continue mode: check scratchpad exists before proceeding
     let resume = args.continue_mode;
@@ -1570,6 +1575,7 @@ async fn run_command(
 /// continuing from where it left off."
 async fn resume_command(
     config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
     verbose: bool,
     color_mode: ColorMode,
     args: ResumeArgs,
@@ -1581,8 +1587,8 @@ async fn resume_command(
         colors::RESET
     );
 
-    // Load config with overrides applied
-    let mut config = load_config_with_overrides(config_sources)?;
+    // Load split core + hats config
+    let mut config = preflight::load_config_for_preflight(config_sources, hats_source).await?;
 
     // Check that scratchpad exists (required for resume)
     let scratchpad_path = std::path::Path::new(&config.core.scratchpad);
@@ -1677,44 +1683,17 @@ async fn resume_command(
 fn init_command(color_mode: ColorMode, args: InitArgs) -> Result<()> {
     let use_colors = color_mode.should_use_colors();
 
-    // Handle --list-presets
+    // Handle --list-presets (lists builtin hat collections)
     if args.list_presets {
         println!("{}", init::format_preset_list());
         return Ok(());
     }
 
-    // Handle --preset (with optional --backend override)
+    // Hard cutover: --preset no longer writes monolithic config.
     if let Some(preset) = args.preset {
-        let backend_override = args.backend.as_deref();
-        match init::init_from_preset(&preset, backend_override, args.force) {
-            Ok(()) => {
-                let msg = if let Some(backend) = backend_override {
-                    format!(
-                        "Created ralph.yml from '{}' preset with {} backend",
-                        preset, backend
-                    )
-                } else {
-                    format!("Created ralph.yml from '{}' preset", preset)
-                };
-                if use_colors {
-                    println!("{}✓{} {}", colors::GREEN, colors::RESET, msg);
-                    println!(
-                        "\n{}Next steps:{}\n  1. Create PROMPT.md with your task\n  2. Run: ralph run",
-                        colors::DIM,
-                        colors::RESET
-                    );
-                } else {
-                    println!("{}", msg);
-                    println!(
-                        "\nNext steps:\n  1. Create PROMPT.md with your task\n  2. Run: ralph run"
-                    );
-                }
-                return Ok(());
-            }
-            Err(e) => {
-                anyhow::bail!("{}", e);
-            }
-        }
+        anyhow::bail!(
+            "`ralph init --preset {preset}` was removed.\n\nUse split config:\n  1) Create core config: ralph init --backend <backend>\n  2) Run with hats:     ralph run -c ralph.yml -H builtin:{preset}"
+        );
     }
 
     // Handle --backend alone (minimal config)
@@ -1729,14 +1708,14 @@ fn init_command(color_mode: ColorMode, args: InitArgs) -> Result<()> {
                         backend
                     );
                     println!(
-                        "\n{}Next steps:{}\n  1. Create PROMPT.md with your task\n  2. Run: ralph run",
+                        "\n{}Next steps:{}\n  1. Create PROMPT.md with your task\n  2. Run core-only: ralph run -c ralph.yml\n  3. Or with hats:  ralph run -c ralph.yml -H builtin:feature",
                         colors::DIM,
                         colors::RESET
                     );
                 } else {
                     println!("Created ralph.yml with {} backend", backend);
                     println!(
-                        "\nNext steps:\n  1. Create PROMPT.md with your task\n  2. Run: ralph run"
+                        "\nNext steps:\n  1. Create PROMPT.md with your task\n  2. Run core-only: ralph run -c ralph.yml\n  3. Or with hats:  ralph run -c ralph.yml -H builtin:feature"
                     );
                 }
                 return Ok(());
@@ -1750,11 +1729,12 @@ fn init_command(color_mode: ColorMode, args: InitArgs) -> Result<()> {
     // No flag specified - show help
     println!("Initialize a new ralph.yml configuration file.\n");
     println!("Usage:");
-    println!("  ralph init --backend <backend>   Generate minimal config for backend");
-    println!("  ralph init --preset <preset>     Use an embedded preset");
-    println!("  ralph init --list-presets        Show available presets\n");
+    println!("  ralph init --backend <backend>   Generate core config (ralph.yml)");
+    println!("  ralph init --list-presets        Show builtin hat collections\n");
     println!("Backends: {}", backend_support::VALID_BACKENDS_LABEL);
-    println!("\nRun 'ralph init --list-presets' to see available presets.");
+    println!(
+        "\nThen run with hats, e.g.: ralph run -c ralph.yml -H builtin:feature"
+    );
 
     Ok(())
 }
@@ -2020,12 +2000,12 @@ const TUTORIAL_STEPS: &[TutorialStep] = &[
         ],
     },
     TutorialStep {
-        title: "Presets: Packaged workflows",
+        title: "Hat collections: Swappable workflows",
         body: &[
-            "Presets bundle hats, backend, and defaults into a single config.",
-            "List built-ins with: ralph init --list-presets",
-            "Create a config: ralph init --preset <name>",
-            "Run directly: ralph run -c builtin:<name>",
+            "Core config and hat collections are split.",
+            "List built-in hat collections: ralph init --list-presets",
+            "Create core config: ralph init --backend <name>",
+            "Run with hats: ralph run -c ralph.yml -H builtin:feature",
         ],
     },
     TutorialStep {
@@ -2074,13 +2054,13 @@ fn print_tutorial_intro(use_colors: bool, interactive: bool) {
             colors::RESET
         );
         println!(
-            "{}Interactive walkthrough of hats, presets, and workflow.{}",
+            "{}Interactive walkthrough of hats, hat collections, and workflow.{}",
             colors::DIM,
             colors::RESET
         );
     } else {
         println!("Ralph Tutorial");
-        println!("Interactive walkthrough of hats, presets, and workflow.");
+        println!("Interactive walkthrough of hats, hat collections, and workflow.");
     }
 
     if !interactive {
@@ -2129,12 +2109,14 @@ fn prompt_to_continue(use_colors: bool) -> Result<()> {
 fn print_tutorial_outro(use_colors: bool) {
     if use_colors {
         println!(
-            "{}Tutorial complete. Next: ralph init --list-presets, then ralph run.{}",
+            "{}Tutorial complete. Next: ralph init --backend <name>, then ralph run -c ralph.yml -H builtin:feature.{}",
             colors::GREEN,
             colors::RESET
         );
     } else {
-        println!("Tutorial complete. Next: ralph init --list-presets, then ralph run.");
+        println!(
+            "Tutorial complete. Next: ralph init --backend <name>, then ralph run -c ralph.yml -H builtin:feature."
+        );
     }
 }
 
@@ -2144,6 +2126,7 @@ fn print_tutorial_outro(use_colors: bool) {
 /// It spawns the AI backend with the bundled PDD SOP for interactive planning.
 async fn plan_command(
     config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
     color_mode: ColorMode,
     args: PlanArgs,
 ) -> Result<()> {
@@ -2163,7 +2146,7 @@ async fn plan_command(
         println!("Starting {} session...", Sop::Pdd.name());
     }
 
-    let config = preflight::load_config_for_preflight(config_sources).await?;
+    let config = preflight::load_config_for_preflight(config_sources, hats_source).await?;
 
     let config = SopRunConfig {
         sop: Sop::Pdd,
@@ -2192,6 +2175,7 @@ async fn plan_command(
 /// It spawns the AI backend with the bundled code-task-generator SOP.
 async fn code_task_command(
     config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
     color_mode: ColorMode,
     args: CodeTaskArgs,
 ) -> Result<()> {
@@ -2211,7 +2195,7 @@ async fn code_task_command(
         println!("Starting {} session...", Sop::CodeTaskGenerator.name());
     }
 
-    let config = preflight::load_config_for_preflight(config_sources).await?;
+    let config = preflight::load_config_for_preflight(config_sources, hats_source).await?;
 
     let config = SopRunConfig {
         sop: Sop::CodeTaskGenerator,
@@ -2326,6 +2310,31 @@ mod tests {
     }
 
     #[test]
+    fn test_hats_source_parse_builtin() {
+        let source = HatsSource::parse("builtin:feature");
+        match source {
+            HatsSource::Builtin(name) => assert_eq!(name, "feature"),
+            _ => panic!("Expected Builtin variant"),
+        }
+    }
+
+    #[test]
+    fn test_hats_source_parse_file() {
+        let source = HatsSource::parse("hats/feature.yml");
+        match source {
+            HatsSource::File(path) => assert_eq!(path, std::path::PathBuf::from("hats/feature.yml")),
+            _ => panic!("Expected File variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_global_hats_flag() {
+        let cli = Cli::try_parse_from(["ralph", "run", "-H", "builtin:feature"])
+            .expect("CLI parse failed");
+        assert_eq!(cli.hats.as_deref(), Some("builtin:feature"));
+    }
+
+    #[test]
     fn test_config_source_parse_remote_https() {
         let source = ConfigSource::parse("https://example.com/preset.yml");
         match source {
@@ -2409,7 +2418,11 @@ mod tests {
         let steps = tutorial_steps();
         assert_eq!(steps.len(), 3);
         assert!(steps.iter().any(|step| step.title.contains("Hats")));
-        assert!(steps.iter().any(|step| step.title.contains("Presets")));
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.title.contains("Hat collections"))
+        );
         assert!(steps.iter().any(|step| step.title.contains("Workflow")));
     }
 
@@ -2959,7 +2972,7 @@ core:
         let mut args = default_run_args();
         args.continue_mode = true;
 
-        let err = run_command(&[], false, ColorMode::Never, args)
+        let err = run_command(&[], None, false, ColorMode::Never, args)
             .await
             .expect_err("expected missing scratchpad error");
         assert!(err.to_string().contains("scratchpad not found"));
@@ -2974,8 +2987,47 @@ core:
         args.dry_run = true;
         args.prompt_text = Some("Test inline prompt".to_string());
 
-        run_command(&[], false, ColorMode::Never, args)
+        run_command(&[], None, false, ColorMode::Never, args)
             .await
             .expect("dry run should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_run_command_rejects_monolithic_core_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _cwd = CwdGuard::set(temp_dir.path());
+
+        std::fs::write(
+            temp_dir.path().join("ralph.yml"),
+            r#"
+cli:
+  backend: claude
+hats:
+  builder:
+    name: Builder
+    description: Test builder
+    triggers: ["build.task"]
+    publishes: ["build.done"]
+"#,
+        )
+        .unwrap();
+
+        let mut args = default_run_args();
+        args.dry_run = true;
+        args.prompt_text = Some("Test inline prompt".to_string());
+
+        let err = run_command(
+            &[ConfigSource::File(std::path::PathBuf::from("ralph.yml"))],
+            None,
+            false,
+            ColorMode::Never,
+            args,
+        )
+        .await
+        .expect_err("expected monolithic core config rejection");
+
+        assert!(err
+            .to_string()
+            .contains("contains hat collection keys (hats/events)"));
     }
 }

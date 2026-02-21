@@ -3,9 +3,10 @@
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, ValueEnum};
 use ralph_core::{CheckResult, CheckStatus, PreflightReport, PreflightRunner, RalphConfig};
+use serde_yaml::{Mapping, Value};
 use tracing::{info, warn};
 
-use crate::{ConfigSource, presets};
+use crate::{ConfigSource, HatsSource, presets};
 
 #[derive(Parser, Debug)]
 pub struct PreflightArgs {
@@ -30,11 +31,12 @@ pub enum PreflightFormat {
 
 pub async fn execute(
     config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
     args: PreflightArgs,
     use_colors: bool,
 ) -> Result<()> {
-    let source_label = config_source_label(config_sources);
-    let config = load_config_for_preflight(config_sources).await?;
+    let source_label = config_source_label(config_sources, hats_source);
+    let config = load_config_for_preflight(config_sources, hats_source).await?;
 
     let runner = PreflightRunner::default_checks();
     let requested = normalize_checks(&args.check);
@@ -193,47 +195,93 @@ fn print_check_line(check: &CheckResult, name_width: usize, use_colors: bool) {
 
 pub(crate) async fn load_config_for_preflight(
     config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
 ) -> Result<RalphConfig> {
+    let (mut core_value, overrides, core_label) = load_core_value(config_sources).await?;
+
+    validate_core_config_shape(&core_value, &core_label)?;
+
+    if let Some(source) = hats_source {
+        let hats_value = load_hats_value(source).await?;
+        validate_hats_config_shape(&hats_value, &source.label())?;
+        core_value = merge_hats_overlay(core_value, hats_value)?;
+    }
+
+    let mut config: RalphConfig = serde_yaml::from_value(core_value)
+        .with_context(|| format!("Failed to parse merged core config from {}", core_label))?;
+
+    config.normalize();
+    config.core.workspace_root =
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    crate::apply_config_overrides(&mut config, &overrides)?;
+
+    Ok(config)
+}
+
+pub(crate) fn config_source_label(
+    config_sources: &[ConfigSource],
+    hats_source: Option<&HatsSource>,
+) -> String {
+    let primary = config_sources
+        .iter()
+        .find(|source| !matches!(source, ConfigSource::Override { .. }));
+
+    let core_label = match primary {
+        Some(ConfigSource::File(path)) => path.display().to_string(),
+        Some(ConfigSource::Builtin(name)) => format!("builtin:{}", name),
+        Some(ConfigSource::Remote(url)) => url.clone(),
+        Some(ConfigSource::Override { .. }) | None => {
+            crate::default_config_path().to_string_lossy().to_string()
+        }
+    };
+
+    if let Some(source) = hats_source {
+        format!("{} + hats:{}", core_label, source.label())
+    } else {
+        core_label
+    }
+}
+
+async fn load_core_value(
+    config_sources: &[ConfigSource],
+) -> Result<(Value, Vec<ConfigSource>, String)> {
     let (primary_sources, overrides): (Vec<_>, Vec<_>) = config_sources
         .iter()
         .partition(|source| !matches!(source, ConfigSource::Override { .. }));
+    let overrides: Vec<ConfigSource> = overrides.into_iter().cloned().collect();
 
     if primary_sources.len() > 1 {
         warn!("Multiple config sources specified, using first one. Others ignored.");
     }
 
-    let mut config = if let Some(source) = primary_sources.first() {
+    if let Some(source) = primary_sources.first() {
         match source {
             ConfigSource::File(path) => {
                 if path.exists() {
-                    RalphConfig::from_file(path)
-                        .with_context(|| format!("Failed to load config from {:?}", path))?
+                    let content = std::fs::read_to_string(path)
+                        .with_context(|| format!("Failed to load config from {:?}", path))?;
+                    let value = parse_yaml_value(&content, &path.display().to_string())?;
+                    Ok((value, overrides, path.display().to_string()))
                 } else {
                     warn!("Config file {:?} not found, using defaults", path);
-                    RalphConfig::default()
+                    Ok((default_core_value()?, overrides, path.display().to_string()))
                 }
             }
             ConfigSource::Builtin(name) => {
-                let preset = presets::get_preset(name).ok_or_else(|| {
-                    let available = presets::preset_names().join(", ");
-                    anyhow::anyhow!(
-                        "Unknown preset '{}'. Run `ralph init --list-presets` to see available presets, then retry with `-c builtin:<name>`.\n\nAvailable: {}",
-                        name,
-                        available
-                    )
-                })?;
-                RalphConfig::parse_yaml(preset.content)
-                    .with_context(|| format!("Failed to parse builtin preset '{}'.", name))?
+                anyhow::bail!(
+                    "`-c builtin:{name}` is no longer supported.\n\nBuiltin presets are now hat collections.\nUse:\n  ralph run -c ralph.yml -H builtin:{name}\n\nOr for preflight:\n  ralph preflight -c ralph.yml -H builtin:{name}"
+                );
             }
             ConfigSource::Remote(url) => {
-                info!("Fetching config from {}", url);
+                info!("Fetching core config from {}", url);
                 let response = reqwest::get(url)
                     .await
-                    .with_context(|| format!("Failed to fetch config from {}", url))?;
+                    .with_context(|| format!("Failed to fetch core config from {}", url))?;
 
                 if !response.status().is_success() {
                     anyhow::bail!(
-                        "Failed to fetch config from {}: HTTP {}",
+                        "Failed to fetch core config from {}: HTTP {}",
                         url,
                         response.status()
                     );
@@ -242,51 +290,240 @@ pub(crate) async fn load_config_for_preflight(
                 let content = response
                     .text()
                     .await
-                    .with_context(|| format!("Failed to read config content from {}", url))?;
+                    .with_context(|| format!("Failed to read core config content from {}", url))?;
 
-                RalphConfig::parse_yaml(&content)
-                    .with_context(|| format!("Failed to parse config from {}", url))?
+                let value = parse_yaml_value(&content, url)?;
+                Ok((value, overrides, url.clone()))
             }
             ConfigSource::Override { .. } => unreachable!("Partitioned out overrides"),
         }
     } else {
         let default_path = crate::default_config_path();
         if default_path.exists() {
-            RalphConfig::from_file(&default_path).with_context(|| {
+            let content = std::fs::read_to_string(&default_path).with_context(|| {
                 format!("Failed to load config from {}", default_path.display())
-            })?
+            })?;
+            let value = parse_yaml_value(&content, &default_path.display().to_string())?;
+            Ok((value, overrides, default_path.display().to_string()))
         } else {
             warn!(
                 "Config file {} not found, using defaults",
                 default_path.display()
             );
-            RalphConfig::default()
-        }
-    };
-
-    config.normalize();
-    config.core.workspace_root =
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-    let override_sources: Vec<_> = overrides.into_iter().cloned().collect();
-    crate::apply_config_overrides(&mut config, &override_sources)?;
-
-    Ok(config)
-}
-
-pub(crate) fn config_source_label(config_sources: &[ConfigSource]) -> String {
-    let primary = config_sources
-        .iter()
-        .find(|source| !matches!(source, ConfigSource::Override { .. }));
-
-    match primary {
-        Some(ConfigSource::File(path)) => path.display().to_string(),
-        Some(ConfigSource::Builtin(name)) => format!("builtin:{}", name),
-        Some(ConfigSource::Remote(url)) => url.clone(),
-        Some(ConfigSource::Override { .. }) | None => {
-            crate::default_config_path().to_string_lossy().to_string()
+            Ok((default_core_value()?, overrides, default_path.display().to_string()))
         }
     }
+}
+
+async fn load_hats_value(source: &HatsSource) -> Result<Value> {
+    match source {
+        HatsSource::File(path) => {
+            if !path.exists() {
+                anyhow::bail!("Hats file not found: {}", path.display());
+            }
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to load hats from {:?}", path))?;
+            let value = parse_yaml_value(&content, &path.display().to_string())?;
+            normalize_hats_source_value(value, &path.display().to_string())
+        }
+        HatsSource::Remote(url) => {
+            info!("Fetching hats config from {}", url);
+            let response = reqwest::get(url)
+                .await
+                .with_context(|| format!("Failed to fetch hats config from {}", url))?;
+
+            if !response.status().is_success() {
+                anyhow::bail!(
+                    "Failed to fetch hats config from {}: HTTP {}",
+                    url,
+                    response.status()
+                );
+            }
+
+            let content = response
+                .text()
+                .await
+                .with_context(|| format!("Failed to read hats config content from {}", url))?;
+
+            let value = parse_yaml_value(&content, url)?;
+            normalize_hats_source_value(value, url)
+        }
+        HatsSource::Builtin(name) => {
+            let preset = presets::get_preset(name).ok_or_else(|| {
+                let available = presets::preset_names().join(", ");
+                anyhow::anyhow!(
+                    "Unknown hat collection '{}'. Available builtins: {}",
+                    name,
+                    available
+                )
+            })?;
+
+            let preset_value = parse_yaml_value(preset.content, &format!("builtin:{}", name))?;
+            extract_hat_overlay_from_preset(preset_value)
+        }
+    }
+}
+
+fn parse_yaml_value(content: &str, label: &str) -> Result<Value> {
+    serde_yaml::from_str(content).with_context(|| format!("Failed to parse YAML from {}", label))
+}
+
+fn normalize_hats_source_value(value: Value, label: &str) -> Result<Value> {
+    let (disallowed, has_hat_keys) = {
+        let mapping = value
+            .as_mapping()
+            .ok_or_else(|| anyhow::anyhow!("Hats config '{}' must be a YAML mapping", label))?;
+        (
+            hats_disallowed_keys(mapping),
+            mapping_get(mapping, "hats").is_some() || mapping_get(mapping, "events").is_some(),
+        )
+    };
+
+    if disallowed.is_empty() {
+        return Ok(value);
+    }
+
+    if has_hat_keys {
+        warn!(
+            "Hats source '{}' contains core/runtime keys [{}]; ignoring them and using hats/events/event_loop only",
+            label,
+            disallowed.join(", ")
+        );
+        return extract_hat_overlay_from_preset(value);
+    }
+
+    anyhow::bail!(
+        "Hats config '{}' contains non-hats keys: {}",
+        label,
+        disallowed.join(", ")
+    )
+}
+
+fn default_core_value() -> Result<Value> {
+    let mut value =
+        serde_yaml::to_value(RalphConfig::default()).context("Failed to build default core config")?;
+
+    if let Some(mapping) = value.as_mapping_mut() {
+        let hats_key = Value::String("hats".to_string());
+        let events_key = Value::String("events".to_string());
+        mapping.remove(&hats_key);
+        mapping.remove(&events_key);
+    }
+
+    Ok(value)
+}
+
+fn mapping_get<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
+    let key_value = Value::String(key.to_string());
+    mapping.get(&key_value)
+}
+
+fn mapping_insert(mapping: &mut Mapping, key: &str, value: Value) {
+    mapping.insert(Value::String(key.to_string()), value);
+}
+
+fn validate_core_config_shape(value: &Value, label: &str) -> Result<()> {
+    let mapping = value
+        .as_mapping()
+        .ok_or_else(|| anyhow::anyhow!("Core config '{}' must be a YAML mapping", label))?;
+
+    let has_hats = mapping_get(mapping, "hats").is_some();
+    let has_events = mapping_get(mapping, "events").is_some();
+
+    if has_hats || has_events {
+        anyhow::bail!(
+            "Core config '{}' contains hat collection keys (hats/events).\n\nSplit your config:\n  - keep backend/runtime settings in core config passed with -c/--config\n  - move hats/events to a hats file passed with -H/--hats\n\nExample:\n  ralph run -c ralph.yml -H hats/feature.yml\n  ralph run -c ralph.yml -H builtin:feature",
+            label
+        );
+    }
+
+    Ok(())
+}
+
+const ALLOWED_HATS_TOP_LEVEL: &[&str] = &["hats", "events", "event_loop", "name", "description"];
+
+fn hats_disallowed_keys(mapping: &Mapping) -> Vec<String> {
+    let mut disallowed = Vec::new();
+    for key in mapping.keys() {
+        if let Some(k) = key.as_str()
+            && !ALLOWED_HATS_TOP_LEVEL.contains(&k)
+        {
+            disallowed.push(k.to_string());
+        }
+    }
+    disallowed
+}
+
+fn validate_hats_config_shape(value: &Value, label: &str) -> Result<()> {
+    let mapping = value
+        .as_mapping()
+        .ok_or_else(|| anyhow::anyhow!("Hats config '{}' must be a YAML mapping", label))?;
+
+    let disallowed = hats_disallowed_keys(mapping);
+    if !disallowed.is_empty() {
+        anyhow::bail!(
+            "Hats config '{}' contains non-hats keys: {}\n\nA hats file may only contain: {}\nCore/backend/runtime settings belong in -c/--config.",
+            label,
+            disallowed.join(", "),
+            ALLOWED_HATS_TOP_LEVEL.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
+fn extract_hat_overlay_from_preset(preset_value: Value) -> Result<Value> {
+    let mapping = preset_value
+        .as_mapping()
+        .ok_or_else(|| anyhow::anyhow!("Builtin hat collection must be a YAML mapping"))?;
+
+    let mut overlay = Mapping::new();
+    for key in ["name", "description", "event_loop", "events", "hats"] {
+        if let Some(value) = mapping_get(mapping, key) {
+            mapping_insert(&mut overlay, key, value.clone());
+        }
+    }
+
+    Ok(Value::Mapping(overlay))
+}
+
+fn merge_hats_overlay(mut core: Value, hats: Value) -> Result<Value> {
+    let core_mapping = core
+        .as_mapping_mut()
+        .ok_or_else(|| anyhow::anyhow!("Core config must be a YAML mapping"))?;
+    let hats_mapping = hats
+        .as_mapping()
+        .ok_or_else(|| anyhow::anyhow!("Hats config must be a YAML mapping"))?;
+
+    if let Some(hats_value) = mapping_get(hats_mapping, "hats") {
+        mapping_insert(core_mapping, "hats", hats_value.clone());
+    }
+
+    if let Some(events_value) = mapping_get(hats_mapping, "events") {
+        mapping_insert(core_mapping, "events", events_value.clone());
+    }
+
+    if let Some(event_loop_overlay) = mapping_get(hats_mapping, "event_loop") {
+        let overlay_mapping = event_loop_overlay.as_mapping().ok_or_else(|| {
+            anyhow::anyhow!("hats.event_loop must be a mapping when provided")
+        })?;
+
+        let event_loop_value = mapping_get(core_mapping, "event_loop")
+            .cloned()
+            .unwrap_or_else(|| Value::Mapping(Mapping::new()));
+
+        let mut event_loop_mapping = event_loop_value.as_mapping().cloned().ok_or_else(|| {
+            anyhow::anyhow!("core.event_loop must be a mapping when provided")
+        })?;
+
+        for (key, value) in overlay_mapping {
+            event_loop_mapping.insert(key.clone(), value.clone());
+        }
+
+        mapping_insert(core_mapping, "event_loop", Value::Mapping(event_loop_mapping));
+    }
+
+    Ok(core)
 }
 
 #[cfg(test)]
@@ -317,23 +554,127 @@ mod tests {
 
     #[test]
     fn config_source_label_handles_sources() {
-        let file_label = config_source_label(&[ConfigSource::File(std::path::PathBuf::from(
-            "/tmp/ralph.yml",
-        ))]);
+        let file_label = config_source_label(
+            &[ConfigSource::File(std::path::PathBuf::from("/tmp/ralph.yml"))],
+            None,
+        );
         assert_eq!(file_label, "/tmp/ralph.yml");
 
-        let builtin_label = config_source_label(&[ConfigSource::Builtin("starter".to_string())]);
+        let builtin_label =
+            config_source_label(&[ConfigSource::Builtin("starter".to_string())], None);
         assert_eq!(builtin_label, "builtin:starter");
 
-        let remote_label = config_source_label(&[ConfigSource::Remote(
-            "https://example.com/ralph.yml".to_string(),
-        )]);
+        let remote_label = config_source_label(
+            &[ConfigSource::Remote("https://example.com/ralph.yml".to_string())],
+            None,
+        );
         assert_eq!(remote_label, "https://example.com/ralph.yml");
 
-        let override_label = config_source_label(&[ConfigSource::Override {
-            key: "core.scratchpad".to_string(),
-            value: "x".to_string(),
-        }]);
+        let override_label = config_source_label(
+            &[ConfigSource::Override {
+                key: "core.scratchpad".to_string(),
+                value: "x".to_string(),
+            }],
+            None,
+        );
         assert_eq!(override_label, "ralph.yml");
+
+        let with_hats_label = config_source_label(
+            &[ConfigSource::File(std::path::PathBuf::from("ralph.yml"))],
+            Some(&HatsSource::Builtin("feature".to_string())),
+        );
+        assert_eq!(with_hats_label, "ralph.yml + hats:builtin:feature");
+    }
+
+    #[test]
+    fn validate_core_config_shape_rejects_hats() {
+        let core: Value = serde_yaml::from_str(
+            r#"
+cli:
+  backend: claude
+hats:
+  builder:
+    name: Builder
+"#,
+        )
+        .unwrap();
+
+        let err = validate_core_config_shape(&core, "core.yml").unwrap_err();
+        assert!(err.to_string().contains("contains hat collection keys"));
+    }
+
+    #[test]
+    fn validate_hats_config_shape_rejects_core_keys() {
+        let hats: Value = serde_yaml::from_str(
+            r#"
+cli:
+  backend: claude
+hats:
+  builder:
+    name: Builder
+"#,
+        )
+        .unwrap();
+
+        let err = validate_hats_config_shape(&hats, "hats.yml").unwrap_err();
+        assert!(err.to_string().contains("contains non-hats keys"));
+    }
+
+    #[test]
+    fn merge_hats_overlay_replaces_hats_and_merges_event_loop() {
+        let core: Value = serde_yaml::from_str(
+            r#"
+cli:
+  backend: claude
+event_loop:
+  max_iterations: 100
+  completion_promise: LOOP_COMPLETE
+"#,
+        )
+        .unwrap();
+
+        let hats: Value = serde_yaml::from_str(
+            r#"
+event_loop:
+  completion_promise: REVIEW_COMPLETE
+hats:
+  reviewer:
+    name: Reviewer
+"#,
+        )
+        .unwrap();
+
+        let merged = merge_hats_overlay(core, hats).unwrap();
+        let config: RalphConfig = serde_yaml::from_value(merged).unwrap();
+
+        assert_eq!(config.event_loop.max_iterations, 100);
+        assert_eq!(config.event_loop.completion_promise, "REVIEW_COMPLETE");
+        assert!(config.hats.contains_key("reviewer"));
+    }
+
+    #[test]
+    fn normalize_hats_source_value_extracts_legacy_mixed_preset() {
+        let legacy: Value = serde_yaml::from_str(
+            r#"
+cli:
+  backend: claude
+core:
+  specs_dir: ./specs/
+event_loop:
+  completion_promise: LOOP_COMPLETE
+hats:
+  builder:
+    name: Builder
+"#,
+        )
+        .unwrap();
+
+        let normalized = normalize_hats_source_value(legacy, "legacy.yml").unwrap();
+        let mapping = normalized.as_mapping().unwrap();
+
+        assert!(mapping_get(mapping, "hats").is_some());
+        assert!(mapping_get(mapping, "event_loop").is_some());
+        assert!(mapping_get(mapping, "cli").is_none());
+        assert!(mapping_get(mapping, "core").is_none());
     }
 }

@@ -64,7 +64,9 @@ impl IdempotencyStore for InMemoryIdempotencyStore {
         let store_key = Self::make_key(method, key);
         match guard.get(&store_key) {
             None => IdempotencyCheck::New,
-            Some(entry) if entry.params == *params => IdempotencyCheck::Replay(entry.response.clone()),
+            Some(entry) if entry.params == *params => {
+                IdempotencyCheck::Replay(entry.response.clone())
+            }
             Some(_) => IdempotencyCheck::Conflict,
         }
     }

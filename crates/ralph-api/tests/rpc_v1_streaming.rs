@@ -8,8 +8,8 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use ralph_api::{ApiConfig, RpcRuntime, serve_with_listener};
 
@@ -30,7 +30,9 @@ impl TestServer {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
-        let local_addr = listener.local_addr().expect("listener local addr should exist");
+        let local_addr = listener
+            .local_addr()
+            .expect("listener local addr should exist");
         let runtime = RpcRuntime::new(config);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -116,7 +118,8 @@ async fn recv_topic_event(stream: &mut WsStream, topic: &str) -> Value {
             continue;
         };
 
-        let payload: Value = serde_json::from_str(&text).expect("websocket event should be valid json");
+        let payload: Value =
+            serde_json::from_str(&text).expect("websocket event should be valid json");
         if payload["topic"] == topic {
             return payload;
         }
@@ -139,7 +142,8 @@ async fn recv_mixed_events(stream: &mut WsStream, required: usize) -> Vec<Value>
             continue;
         };
 
-        let payload: Value = serde_json::from_str(&text).expect("websocket event should be valid json");
+        let payload: Value =
+            serde_json::from_str(&text).expect("websocket event should be valid json");
         events.push(payload);
     }
 
@@ -275,7 +279,7 @@ async fn resume_with_cursor_replays_ordered_without_duplicates() -> Result<()> {
         .to_string();
 
     let mut resume_stream = open_stream(&server, &resume_subscription_id).await?;
-    let replay_events = vec![
+    let replay_events = [
         recv_topic_event(&mut resume_stream, "task.status.changed").await,
         recv_topic_event(&mut resume_stream, "task.status.changed").await,
     ];
@@ -288,12 +292,16 @@ async fn resume_with_cursor_replays_ordered_without_duplicates() -> Result<()> {
         .expect("sequence should be present");
 
     assert!(second_sequence > first_sequence);
-    assert!(replay_events
-        .iter()
-        .all(|event| event["replay"]["mode"] == "resume"));
-    assert!(replay_events
-        .iter()
-        .all(|event| event["cursor"] != first_event["cursor"]));
+    assert!(
+        replay_events
+            .iter()
+            .all(|event| event["replay"]["mode"] == "resume")
+    );
+    assert!(
+        replay_events
+            .iter()
+            .all(|event| event["cursor"] != first_event["cursor"])
+    );
 
     resume_stream.close(None).await?;
     server.stop().await;
@@ -470,18 +478,24 @@ async fn reconnect_with_ack_cursor_replays_only_new_events() -> Result<()> {
     assert_eq!(status, 200);
 
     let mut reconnect_stream = open_stream(&server, &subscription_id).await?;
-    let replay_events = vec![
+    let replay_events = [
         recv_topic_event(&mut reconnect_stream, "task.status.changed").await,
         recv_topic_event(&mut reconnect_stream, "task.status.changed").await,
     ];
 
-    let first_sequence = first_event["sequence"].as_u64().expect("sequence should exist");
-    assert!(replay_events
-        .iter()
-        .all(|event| event["sequence"].as_u64().is_some_and(|sequence| sequence > first_sequence)));
-    assert!(replay_events
-        .iter()
-        .all(|event| event["cursor"] != first_event["cursor"]));
+    let first_sequence = first_event["sequence"]
+        .as_u64()
+        .expect("sequence should exist");
+    assert!(replay_events.iter().all(|event| {
+        event["sequence"]
+            .as_u64()
+            .is_some_and(|sequence| sequence > first_sequence)
+    }));
+    assert!(
+        replay_events
+            .iter()
+            .all(|event| event["cursor"] != first_event["cursor"])
+    );
 
     reconnect_stream.close(None).await?;
     server.stop().await;

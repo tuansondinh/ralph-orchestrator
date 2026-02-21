@@ -237,9 +237,7 @@ fn now_ts() -> String {
 fn request_schema_validator() -> &'static JSONSchema {
     static REQUEST_VALIDATOR: OnceLock<JSONSchema> = OnceLock::new();
     REQUEST_VALIDATOR.get_or_init(|| {
-        let raw_schema = include_str!(
-            "../../../.ralph/specs/rpc-v1-control-plane/implementation/rpc-v1-schema.json"
-        );
+        let raw_schema = include_str!("../data/rpc-v1-schema.json");
         let root_schema: Value =
             serde_json::from_str(raw_schema).expect("embedded rpc-v1 schema must be valid JSON");
         let defs = root_schema

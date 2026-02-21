@@ -11,12 +11,9 @@ use ralph_core::{
 use serde::{Deserialize, Serialize};
 
 use crate::errors::ApiError;
-use crate::loop_side_effects::{
-    resolve_discard_target, resolve_loop_root, spawn_retry_merge_flow,
-};
+use crate::loop_side_effects::{resolve_discard_target, resolve_loop_root, spawn_retry_merge_flow};
 use crate::loop_support::{
-    current_commit, is_pid_alive, loop_not_found_error, map_merge_error, map_worktree_error,
-    now_ts,
+    current_commit, is_pid_alive, loop_not_found_error, map_merge_error, map_worktree_error, now_ts,
 };
 use crate::task_domain::{TaskCreateParams, TaskDomain};
 
@@ -165,7 +162,10 @@ impl LoopDomain {
             loops.push(LoopRecord {
                 id: entry.loop_id,
                 status: status.to_string(),
-                location: entry.merge_commit.clone().unwrap_or_else(|| "-".to_string()),
+                location: entry
+                    .merge_commit
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string()),
                 prompt: Some(entry.prompt),
                 merge_commit: entry.merge_commit,
             });
@@ -205,9 +205,9 @@ impl LoopDomain {
     }
     pub fn prune(&self) -> Result<(), ApiError> {
         let registry = LoopRegistry::new(&self.workspace_root);
-        registry.clean_stale().map_err(|error| {
-            ApiError::internal(format!("failed pruning stale loops: {error}"))
-        })?;
+        registry
+            .clean_stale()
+            .map_err(|error| ApiError::internal(format!("failed pruning stale loops: {error}")))?;
         Ok(())
     }
     pub fn retry(&self, params: LoopRetryParams) -> Result<(), ApiError> {
@@ -411,9 +411,7 @@ impl LoopDomain {
 
         let merge_prompt = format!(
             "Merge worktree loop '{}' into main branch.\n\nThe worktree is located at: {}\nOriginal task: {}\n\nInstructions:\n1. Review the commits in the worktree branch\n2. Merge the changes into main branch\n3. Resolve any conflicts if present\n4. Delete the worktree after successful merge",
-            params.loop_id,
-            loop_info.location,
-            loop_prompt
+            params.loop_id, loop_info.location, loop_prompt
         );
 
         let task_id = format!("merge-{}-{}", params.loop_id, Utc::now().timestamp_millis());

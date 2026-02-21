@@ -7,9 +7,9 @@
 //! - `show`: Show detailed configuration for a specific hat
 
 use crate::backend_support;
+use crate::display::colors;
 use crate::preflight;
 use crate::{ConfigSource, HatsSource};
-use crate::display::colors;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -762,7 +762,9 @@ mod tests {
         assert!(output.contains("Graph:"));
         assert!(output.contains("task.start -> Ralph"));
         assert!(output.contains("Ralph -> Builder"));
-        assert!(output.contains("Builder => build.task") || output.contains("Builder <= build.task"));
+        assert!(
+            output.contains("Builder => build.task") || output.contains("Builder <= build.task")
+        );
     }
 
     #[test]

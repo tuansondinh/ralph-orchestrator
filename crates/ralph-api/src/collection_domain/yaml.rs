@@ -5,8 +5,7 @@ use serde::Serialize;
 use crate::errors::ApiError;
 
 use super::{
-    CollectionRecord, GraphData, GraphEdge, GraphNode, HatNodeData, NodePosition, Viewport,
-    now_ts,
+    CollectionRecord, GraphData, GraphEdge, GraphNode, HatNodeData, NodePosition, Viewport, now_ts,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,9 +74,7 @@ pub(super) fn graph_from_yaml(content: &str) -> Result<GraphData, ApiError> {
                 ApiError::invalid_params("collection.import hat keys must be strings")
             })?;
             let value = value.as_mapping().ok_or_else(|| {
-                ApiError::invalid_params(format!(
-                    "collection.import hat '{key}' must be an object"
-                ))
+                ApiError::invalid_params(format!("collection.import hat '{key}' must be an object"))
             })?;
             Ok((key.to_string(), value))
         })
@@ -137,7 +134,10 @@ pub(super) fn graph_from_yaml(content: &str) -> Result<GraphData, ApiError> {
     let mut edge_index = 0_u64;
 
     for (event_name, publishers) in event_publishers {
-        let subscribers = event_subscribers.get(&event_name).cloned().unwrap_or_default();
+        let subscribers = event_subscribers
+            .get(&event_name)
+            .cloned()
+            .unwrap_or_default();
 
         for publisher in &publishers {
             for subscriber in &subscribers {
@@ -185,7 +185,10 @@ pub(super) fn export_collection_yaml(collection: &CollectionRecord) -> Result<St
             node.id.clone(),
             node.data.triggers_on.iter().cloned().collect(),
         );
-        hat_publishes.insert(node.id.clone(), node.data.publishes.iter().cloned().collect());
+        hat_publishes.insert(
+            node.id.clone(),
+            node.data.publishes.iter().cloned().collect(),
+        );
     }
 
     for edge in &collection.graph.edges {
@@ -262,8 +265,9 @@ pub(super) fn export_collection_yaml(collection: &CollectionRecord) -> Result<St
         events,
     };
 
-    let yaml_body = serde_yaml::to_string(&preset)
-        .map_err(|error| ApiError::internal(format!("failed serializing collection yaml: {error}")))?;
+    let yaml_body = serde_yaml::to_string(&preset).map_err(|error| {
+        ApiError::internal(format!("failed serializing collection yaml: {error}"))
+    })?;
 
     let header = format!(
         "# {}\n# {}\n# Generated at: {}\n\n",

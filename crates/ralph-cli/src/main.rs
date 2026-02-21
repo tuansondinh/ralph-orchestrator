@@ -169,10 +169,10 @@ impl ColorMode {
 ///
 /// `RALPH_CONFIG` (if set) is used before the hardcoded fallback to `ralph.yml`.
 pub(crate) fn default_config_path() -> PathBuf {
-    if let Ok(value) = std::env::var("RALPH_CONFIG") {
-        if !value.trim().is_empty() {
-            return PathBuf::from(value);
-        }
+    if let Ok(value) = std::env::var("RALPH_CONFIG")
+        && !value.trim().is_empty()
+    {
+        return PathBuf::from(value);
     }
 
     PathBuf::from("ralph.yml")
@@ -398,9 +398,8 @@ pub(crate) fn load_config_with_overrides(
         // Only overrides specified - load default path as base
         let default_path = default_config_path();
         if default_path.exists() {
-            RalphConfig::from_file(&default_path).with_context(|| {
-                format!("Failed to load config from {}", default_path.display())
-            })?
+            RalphConfig::from_file(&default_path)
+                .with_context(|| format!("Failed to load config from {}", default_path.display()))?
         } else {
             warn!(
                 "Config file {} not found, using defaults",
@@ -920,13 +919,22 @@ async fn main() -> Result<()> {
         cli.config.clone()
     };
 
-    let config_sources: Vec<ConfigSource> =
-        config_values.iter().map(|s| ConfigSource::parse(s)).collect();
+    let config_sources: Vec<ConfigSource> = config_values
+        .iter()
+        .map(|s| ConfigSource::parse(s))
+        .collect();
     let hats_source = cli.hats.as_deref().map(HatsSource::parse);
 
     match cli.command {
         Some(Commands::Run(args)) => {
-            run_command(&config_sources, hats_source.as_ref(), cli.verbose, cli.color, args).await
+            run_command(
+                &config_sources,
+                hats_source.as_ref(),
+                cli.verbose,
+                cli.color,
+                args,
+            )
+            .await
         }
         Some(Commands::Preflight(args)) => {
             preflight::execute(
@@ -1024,8 +1032,6 @@ async fn main() -> Result<()> {
         }
     }
 }
-
-
 
 fn format_preflight_summary(report: &PreflightReport) -> String {
     let icons: Vec<String> = report
@@ -1728,9 +1734,7 @@ fn init_command(color_mode: ColorMode, args: InitArgs) -> Result<()> {
     println!("  ralph init --backend <backend>   Generate core config (ralph.yml)");
     println!("  ralph init --list-presets        Show builtin hat collections\n");
     println!("Backends: {}", backend_support::VALID_BACKENDS_LABEL);
-    println!(
-        "\nThen run with hats, e.g.: ralph run -c ralph.yml -H builtin:feature"
-    );
+    println!("\nThen run with hats, e.g.: ralph run -c ralph.yml -H builtin:feature");
 
     Ok(())
 }
@@ -2318,7 +2322,9 @@ mod tests {
     fn test_hats_source_parse_file() {
         let source = HatsSource::parse("hats/feature.yml");
         match source {
-            HatsSource::File(path) => assert_eq!(path, std::path::PathBuf::from("hats/feature.yml")),
+            HatsSource::File(path) => {
+                assert_eq!(path, std::path::PathBuf::from("hats/feature.yml"))
+            }
             _ => panic!("Expected File variant"),
         }
     }
@@ -3004,8 +3010,9 @@ hats:
         .await
         .expect_err("expected monolithic core config rejection");
 
-        assert!(err
-            .to_string()
-            .contains("contains hat collection keys (hats/events)"));
+        assert!(
+            err.to_string()
+                .contains("contains hat collection keys (hats/events)")
+        );
     }
 }

@@ -52,7 +52,10 @@ fn assert_all_valid(validator: &JSONSchema, dir: &Path) {
     for path in collect_json_files(dir) {
         let instance = load_json(&path);
         if let Err(errors) = validator.validate(&instance) {
-            let reasons = errors.map(|err| err.to_string()).collect::<Vec<_>>().join("; ");
+            let reasons = errors
+                .map(|err| err.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
             panic!(
                 "expected fixture to be valid: {}\nvalidation errors: {}",
                 path.display(),
@@ -77,12 +80,8 @@ fn assert_all_invalid(validator: &JSONSchema, dir: &Path) {
 fn rpc_v1_fixture_conformance() {
     let root = repo_root();
 
-    let rpc_schema = load_json(
-        &root.join(".ralph/specs/rpc-v1-control-plane/implementation/rpc-v1-schema.json"),
-    );
-    let event_schema = load_json(
-        &root.join(".ralph/specs/rpc-v1-control-plane/implementation/rpc-v1-events.json"),
-    );
+    let rpc_schema = load_json(&root.join("crates/ralph-api/data/rpc-v1-schema.json"));
+    let event_schema = load_json(&root.join("crates/ralph-api/data/rpc-v1-events.json"));
 
     let request_validator = compile_def_validator(&rpc_schema, "requestEnvelope");
     let response_validator = compile_def_validator(&rpc_schema, "responseEnvelope");
@@ -95,7 +94,10 @@ fn rpc_v1_fixture_conformance() {
     assert_all_invalid(&request_validator, &fixtures_root.join("requests/invalid"));
 
     assert_all_valid(&response_validator, &fixtures_root.join("responses/valid"));
-    assert_all_invalid(&response_validator, &fixtures_root.join("responses/invalid"));
+    assert_all_invalid(
+        &response_validator,
+        &fixtures_root.join("responses/invalid"),
+    );
 
     assert_all_valid(&error_validator, &fixtures_root.join("errors/valid"));
     assert_all_invalid(&error_validator, &fixtures_root.join("errors/invalid"));

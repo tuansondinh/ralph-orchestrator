@@ -26,9 +26,9 @@ impl FromStr for AuthMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "trusted_local" | "trusted-local" | "local" => Ok(Self::TrustedLocal),
             "token" => Ok(Self::Token),
-            other => anyhow::bail!(
-                "invalid auth mode '{other}'. expected one of: trusted_local, token"
-            ),
+            other => {
+                anyhow::bail!("invalid auth mode '{other}'. expected one of: trusted_local, token")
+            }
         }
     }
 }
@@ -104,9 +104,7 @@ impl ApiConfig {
 
         if let Ok(interval_ms) = env::var("RALPH_API_LOOP_PROCESS_INTERVAL_MS") {
             config.loop_process_interval_ms = interval_ms.parse::<u64>().with_context(|| {
-                format!(
-                    "failed parsing RALPH_API_LOOP_PROCESS_INTERVAL_MS='{interval_ms}' as u64"
-                )
+                format!("failed parsing RALPH_API_LOOP_PROCESS_INTERVAL_MS='{interval_ms}' as u64")
             })?;
         }
 

@@ -454,8 +454,8 @@ async fn bot_test(args: TestArgs, use_colors: bool) -> Result<()> {
     )?;
 
     // Resolve chat_id
-    let chat_id = resolve_chat_id()
-        .context("No chat_id found. Run `ralph bot onboard` to detect it")?;
+    let chat_id =
+        resolve_chat_id().context("No chat_id found. Run `ralph bot onboard` to detect it")?;
 
     print!("  Sending message to chat {}...", chat_id);
     io::stdout().flush()?;
@@ -555,12 +555,11 @@ async fn run_daemon(
     }
 
     // Resolve bot token and chat_id for Telegram adapter
-    let token = config
-        .robot
-        .resolve_bot_token()
-        .context("No bot token available. Run `ralph bot onboard` or set RALPH_TELEGRAM_BOT_TOKEN")?;
-    let chat_id = resolve_chat_id()
-        .context("No chat_id found. Run `ralph bot onboard` to detect it")?;
+    let token = config.robot.resolve_bot_token().context(
+        "No bot token available. Run `ralph bot onboard` or set RALPH_TELEGRAM_BOT_TOKEN",
+    )?;
+    let chat_id =
+        resolve_chat_id().context("No chat_id found. Run `ralph bot onboard` to detect it")?;
 
     if use_colors {
         println!("\x1b[1mRalph Daemon\x1b[0m (Telegram)");
@@ -852,10 +851,7 @@ fn save_robot_config(timeout: u64, bot_token: Option<&str>) -> Result<()> {
 }
 
 /// Write resolved config to a temporary runtime file so loop_runner receives a config path.
-fn write_temp_config_for_daemon(
-    workspace_root: &Path,
-    config: &RalphConfig,
-) -> Result<PathBuf> {
+fn write_temp_config_for_daemon(workspace_root: &Path, config: &RalphConfig) -> Result<PathBuf> {
     let state_dir = workspace_root.join(".ralph");
     std::fs::create_dir_all(&state_dir).context("Failed to create .ralph directory")?;
 
@@ -1124,8 +1120,7 @@ mod tests {
             .await
             .expect_err("expected daemon setup error");
         assert!(
-            !err
-                .to_string()
+            !err.to_string()
                 .contains("Builtin presets are not supported"),
             "unexpected unsupported-config error: {err}"
         );

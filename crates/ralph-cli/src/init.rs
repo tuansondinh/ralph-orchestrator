@@ -4,7 +4,9 @@
 //! a minimal backend template or from an embedded preset.
 
 use crate::backend_support;
-use crate::presets::{get_preset, list_presets, preset_names};
+use crate::presets::list_presets;
+#[cfg(test)]
+use crate::presets::{get_preset, preset_names};
 use std::fs;
 use std::path::Path;
 
@@ -16,6 +18,7 @@ pub enum InitError {
     )]
     FileExists,
 
+    #[cfg(test)]
     #[error(
         "Unknown preset '{0}'. Available presets: {1}\nSee: docs/reference/troubleshooting.md#unknown-preset"
     )]
@@ -27,6 +30,7 @@ pub enum InitError {
     #[error("Failed to write ralph.yml: {0}")]
     WriteError(#[from] std::io::Error),
 
+    #[cfg(test)]
     #[error("Failed to parse/generate YAML: {0}")]
     YamlError(String),
 }
@@ -95,9 +99,9 @@ fn check_file_exists(force: bool) -> Result<(), InitError> {
 pub fn init_from_backend(backend: &str, force: bool) -> Result<(), InitError> {
     // Validate backend
     if !VALID_BACKENDS.contains(&backend) {
-        return Err(InitError::UnknownBackend(backend_support::unknown_backend_message(
-            backend,
-        )));
+        return Err(InitError::UnknownBackend(
+            backend_support::unknown_backend_message(backend),
+        ));
     }
 
     check_file_exists(force)?;
@@ -117,6 +121,7 @@ pub fn init_from_backend(backend: &str, force: bool) -> Result<(), InitError> {
 ///
 /// # Errors
 /// Returns error if file exists (without force) or preset doesn't exist.
+#[cfg(test)]
 pub fn init_from_preset(
     preset_name: &str,
     backend_override: Option<&str>,
@@ -131,9 +136,9 @@ pub fn init_from_preset(
     if let Some(backend) = backend_override
         && !VALID_BACKENDS.contains(&backend)
     {
-        return Err(InitError::UnknownBackend(backend_support::unknown_backend_message(
-            backend,
-        )));
+        return Err(InitError::UnknownBackend(
+            backend_support::unknown_backend_message(backend),
+        ));
     }
 
     check_file_exists(force)?;
@@ -151,6 +156,7 @@ pub fn init_from_preset(
 
 /// Overrides the backend field in YAML content using regex for surgical replacement.
 /// Preserves all comments and formatting.
+#[cfg(test)]
 fn override_backend_in_yaml(content: &str, backend: &str) -> Result<String, InitError> {
     use regex::Regex;
 

@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use anyhow::Result;
-use reqwest::Client;
 use ralph_core::{LoopEntry, LoopRegistry, MergeQueue};
+use reqwest::Client;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -25,7 +25,9 @@ impl TestServer {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
-        let local_addr = listener.local_addr().expect("listener local addr should exist");
+        let local_addr = listener
+            .local_addr()
+            .expect("listener local addr should exist");
         let runtime = RpcRuntime::new(config);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -126,8 +128,17 @@ async fn task_crud_ready_and_guardrails_parity() -> Result<()> {
 
     let ready_before = rpc_request("req-task-ready-1", "task.ready", json!({}), None);
     let (_, ready_before_payload) = post_rpc(&client, &server, &ready_before).await?;
-    assert_eq!(ready_before_payload["result"]["tasks"].as_array().unwrap().len(), 1);
-    assert_eq!(ready_before_payload["result"]["tasks"][0]["id"], "task-blocker-1");
+    assert_eq!(
+        ready_before_payload["result"]["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        ready_before_payload["result"]["tasks"][0]["id"],
+        "task-blocker-1"
+    );
 
     let close_blocker = rpc_request(
         "req-task-close-1",
@@ -140,8 +151,17 @@ async fn task_crud_ready_and_guardrails_parity() -> Result<()> {
 
     let ready_after = rpc_request("req-task-ready-2", "task.ready", json!({}), None);
     let (_, ready_after_payload) = post_rpc(&client, &server, &ready_after).await?;
-    assert_eq!(ready_after_payload["result"]["tasks"].as_array().unwrap().len(), 1);
-    assert_eq!(ready_after_payload["result"]["tasks"][0]["id"], "task-blocked-1");
+    assert_eq!(
+        ready_after_payload["result"]["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        ready_after_payload["result"]["tasks"][0]["id"],
+        "task-blocked-1"
+    );
 
     let archive_blocker = rpc_request(
         "req-task-archive-1",
@@ -356,11 +376,13 @@ async fn loop_methods_and_trigger_merge_task_parity() -> Result<()> {
         None,
     );
     let (_, list_with_terminal_payload) = post_rpc(&client, &server, &list_with_terminal).await?;
-    assert!(list_with_terminal_payload["result"]["loops"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|entry| entry["id"] == "loop-queued-1" && entry["status"] == "merged"));
+    assert!(
+        list_with_terminal_payload["result"]["loops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["id"] == "loop-queued-1" && entry["status"] == "merged")
+    );
 
     let trigger_merge_task = rpc_request(
         "req-loop-trigger-task-1",
@@ -385,9 +407,11 @@ async fn loop_methods_and_trigger_merge_task_parity() -> Result<()> {
     );
     let (status, get_task_payload) = post_rpc(&client, &server, &get_task).await?;
     assert_eq!(status, 200);
-    assert!(get_task_payload["result"]["task"]["title"]
-        .as_str()
-        .is_some_and(|title| title.starts_with("Merge:")));
+    assert!(
+        get_task_payload["result"]["task"]["title"]
+            .as_str()
+            .is_some_and(|title| title.starts_with("Merge:"))
+    );
 
     server.stop().await;
     Ok(())

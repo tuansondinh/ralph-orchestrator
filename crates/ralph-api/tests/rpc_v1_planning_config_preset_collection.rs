@@ -25,7 +25,9 @@ impl TestServer {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
-        let local_addr = listener.local_addr().expect("listener local addr should exist");
+        let local_addr = listener
+            .local_addr()
+            .expect("listener local addr should exist");
         let runtime = RpcRuntime::new(config);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -108,11 +110,13 @@ async fn planning_methods_cover_lifecycle_and_artifacts() -> Result<()> {
 
     let list = rpc_request("req-plan-list-1", "planning.list", json!({}), None);
     let (_, list_payload) = post_rpc(&client, &server, &list).await?;
-    assert!(list_payload["result"]["sessions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|session| session["id"] == session_id));
+    assert!(
+        list_payload["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|session| session["id"] == session_id)
+    );
 
     let get = rpc_request(
         "req-plan-get-1",
@@ -169,9 +173,11 @@ async fn planning_methods_cover_lifecycle_and_artifacts() -> Result<()> {
     let (status, artifact_payload) = post_rpc(&client, &server, &get_artifact).await?;
     assert_eq!(status, 200);
     assert_eq!(artifact_payload["result"]["filename"], "plan.md");
-    assert!(artifact_payload["result"]["content"]
-        .as_str()
-        .is_some_and(|content| content.contains("Add rpc methods")));
+    assert!(
+        artifact_payload["result"]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("Add rpc methods"))
+    );
 
     let delete = rpc_request(
         "req-plan-delete-1",
@@ -191,7 +197,10 @@ async fn planning_methods_cover_lifecycle_and_artifacts() -> Result<()> {
     );
     let (status, missing_payload) = post_rpc(&client, &server, &get_deleted).await?;
     assert_eq!(status, 404);
-    assert_eq!(missing_payload["error"]["code"], "PLANNING_SESSION_NOT_FOUND");
+    assert_eq!(
+        missing_payload["error"]["code"],
+        "PLANNING_SESSION_NOT_FOUND"
+    );
 
     server.stop().await;
     Ok(())
@@ -310,11 +319,13 @@ async fn collection_and_preset_methods_cover_crud_import_export_and_ordering() -
     );
     let (status, export_payload) = post_rpc(&client, &server, &export).await?;
     assert_eq!(status, 200);
-    assert!(export_payload["result"]["yaml"]
-        .as_str()
-        .is_some_and(|yaml| yaml.contains("Team Flow Updated")));
+    assert!(
+        export_payload["result"]["yaml"]
+            .as_str()
+            .is_some_and(|yaml| yaml.contains("Team Flow Updated"))
+    );
 
-    let import_yaml = r#"
+    let import_yaml = r"
 hats:
   scout:
     name: Scout
@@ -326,7 +337,7 @@ hats:
     description: Builder phase
     triggers: [plan.start]
     publishes: [build.done]
-"#;
+";
 
     let import = rpc_request(
         "req-collection-import-1",
@@ -340,15 +351,20 @@ hats:
     );
     let (status, import_payload) = post_rpc(&client, &server, &import).await?;
     assert_eq!(status, 200);
-    assert_eq!(import_payload["result"]["collection"]["name"], "Imported Flow");
+    assert_eq!(
+        import_payload["result"]["collection"]["name"],
+        "Imported Flow"
+    );
 
     let list = rpc_request("req-collection-list-1", "collection.list", json!({}), None);
     let (_, list_payload) = post_rpc(&client, &server, &list).await?;
-    assert!(list_payload["result"]["collections"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|collection| collection["id"] == collection_id));
+    assert!(
+        list_payload["result"]["collections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|collection| collection["id"] == collection_id)
+    );
 
     let presets = rpc_request("req-preset-list-1", "preset.list", json!({}), None);
     let (status, presets_payload) = post_rpc(&client, &server, &presets).await?;
@@ -364,7 +380,11 @@ hats:
     let collection_names: Vec<String> = presets
         .iter()
         .filter(|preset| preset["source"] == "collection")
-        .filter_map(|preset| preset["name"].as_str().map(std::string::ToString::to_string))
+        .filter_map(|preset| {
+            preset["name"]
+                .as_str()
+                .map(std::string::ToString::to_string)
+        })
         .collect();
     let mut sorted_collection_names = collection_names.clone();
     sorted_collection_names.sort();

@@ -15,7 +15,11 @@ pub trait Authenticator: Send + Sync {
 pub struct TrustedLocalAuthenticator;
 
 impl Authenticator for TrustedLocalAuthenticator {
-    fn authorize(&self, _request: &RpcRequestEnvelope, _headers: &HeaderMap) -> Result<(), ApiError> {
+    fn authorize(
+        &self,
+        _request: &RpcRequestEnvelope,
+        _headers: &HeaderMap,
+    ) -> Result<(), ApiError> {
         Ok(())
     }
 

@@ -310,7 +310,11 @@ async fn load_core_value(
                 "Config file {} not found, using defaults",
                 default_path.display()
             );
-            Ok((default_core_value()?, overrides, default_path.display().to_string()))
+            Ok((
+                default_core_value()?,
+                overrides,
+                default_path.display().to_string(),
+            ))
         }
     }
 }
@@ -400,8 +404,8 @@ fn normalize_hats_source_value(value: Value, label: &str) -> Result<Value> {
 }
 
 fn default_core_value() -> Result<Value> {
-    let mut value =
-        serde_yaml::to_value(RalphConfig::default()).context("Failed to build default core config")?;
+    let mut value = serde_yaml::to_value(RalphConfig::default())
+        .context("Failed to build default core config")?;
 
     if let Some(mapping) = value.as_mapping_mut() {
         let hats_key = Value::String("hats".to_string());
@@ -504,23 +508,28 @@ fn merge_hats_overlay(mut core: Value, hats: Value) -> Result<Value> {
     }
 
     if let Some(event_loop_overlay) = mapping_get(hats_mapping, "event_loop") {
-        let overlay_mapping = event_loop_overlay.as_mapping().ok_or_else(|| {
-            anyhow::anyhow!("hats.event_loop must be a mapping when provided")
-        })?;
+        let overlay_mapping = event_loop_overlay
+            .as_mapping()
+            .ok_or_else(|| anyhow::anyhow!("hats.event_loop must be a mapping when provided"))?;
 
         let event_loop_value = mapping_get(core_mapping, "event_loop")
             .cloned()
             .unwrap_or_else(|| Value::Mapping(Mapping::new()));
 
-        let mut event_loop_mapping = event_loop_value.as_mapping().cloned().ok_or_else(|| {
-            anyhow::anyhow!("core.event_loop must be a mapping when provided")
-        })?;
+        let mut event_loop_mapping = event_loop_value
+            .as_mapping()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("core.event_loop must be a mapping when provided"))?;
 
         for (key, value) in overlay_mapping {
             event_loop_mapping.insert(key.clone(), value.clone());
         }
 
-        mapping_insert(core_mapping, "event_loop", Value::Mapping(event_loop_mapping));
+        mapping_insert(
+            core_mapping,
+            "event_loop",
+            Value::Mapping(event_loop_mapping),
+        );
     }
 
     Ok(core)
@@ -555,7 +564,9 @@ mod tests {
     #[test]
     fn config_source_label_handles_sources() {
         let file_label = config_source_label(
-            &[ConfigSource::File(std::path::PathBuf::from("/tmp/ralph.yml"))],
+            &[ConfigSource::File(std::path::PathBuf::from(
+                "/tmp/ralph.yml",
+            ))],
             None,
         );
         assert_eq!(file_label, "/tmp/ralph.yml");
@@ -565,7 +576,9 @@ mod tests {
         assert_eq!(builtin_label, "builtin:starter");
 
         let remote_label = config_source_label(
-            &[ConfigSource::Remote("https://example.com/ralph.yml".to_string())],
+            &[ConfigSource::Remote(
+                "https://example.com/ralph.yml".to_string(),
+            )],
             None,
         );
         assert_eq!(remote_label, "https://example.com/ralph.yml");
@@ -589,13 +602,13 @@ mod tests {
     #[test]
     fn validate_core_config_shape_rejects_hats() {
         let core: Value = serde_yaml::from_str(
-            r#"
+            r"
 cli:
   backend: claude
 hats:
   builder:
     name: Builder
-"#,
+",
         )
         .unwrap();
 
@@ -606,13 +619,13 @@ hats:
     #[test]
     fn validate_hats_config_shape_rejects_core_keys() {
         let hats: Value = serde_yaml::from_str(
-            r#"
+            r"
 cli:
   backend: claude
 hats:
   builder:
     name: Builder
-"#,
+",
         )
         .unwrap();
 
@@ -623,24 +636,24 @@ hats:
     #[test]
     fn merge_hats_overlay_replaces_hats_and_merges_event_loop() {
         let core: Value = serde_yaml::from_str(
-            r#"
+            r"
 cli:
   backend: claude
 event_loop:
   max_iterations: 100
   completion_promise: LOOP_COMPLETE
-"#,
+",
         )
         .unwrap();
 
         let hats: Value = serde_yaml::from_str(
-            r#"
+            r"
 event_loop:
   completion_promise: REVIEW_COMPLETE
 hats:
   reviewer:
     name: Reviewer
-"#,
+",
         )
         .unwrap();
 
@@ -655,7 +668,7 @@ hats:
     #[test]
     fn normalize_hats_source_value_extracts_legacy_mixed_preset() {
         let legacy: Value = serde_yaml::from_str(
-            r#"
+            r"
 cli:
   backend: claude
 core:
@@ -665,7 +678,7 @@ event_loop:
 hats:
   builder:
     name: Builder
-"#,
+",
         )
         .unwrap();
 

@@ -35,7 +35,10 @@ pub fn spawn_retry_merge_flow(
     Ok(())
 }
 
-pub fn resolve_discard_target(workspace_root: &Path, loop_id: &str) -> Result<ResolvedLoop, ApiError> {
+pub fn resolve_discard_target(
+    workspace_root: &Path,
+    loop_id: &str,
+) -> Result<ResolvedLoop, ApiError> {
     let registry = LoopRegistry::new(workspace_root);
     match registry.get(loop_id) {
         Ok(Some(entry)) => {

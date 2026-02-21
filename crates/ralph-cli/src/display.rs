@@ -4,7 +4,7 @@
 //! iteration separators, termination messages, event tables,
 //! and other terminal UI elements.
 
-use ralph_core::{EventRecord, TerminationReason, truncate_with_ellipsis, floor_char_boundary};
+use ralph_core::{EventRecord, TerminationReason, floor_char_boundary, truncate_with_ellipsis};
 use ralph_proto::HatId;
 use std::collections::HashMap;
 use std::time::Duration;

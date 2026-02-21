@@ -851,7 +851,10 @@ fn show_diff(args: DiffArgs) -> Result<()> {
 }
 
 fn default_diff_base_branch(cwd: &std::path::Path) -> String {
-    if let Some(output) = git_output(cwd, ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]) {
+    if let Some(output) = git_output(
+        cwd,
+        ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"],
+    ) {
         let value = output.trim();
         if let Some(base) = value.split('/').next_back() {
             let direct = base.to_string();
@@ -1537,7 +1540,10 @@ mod tests {
             .current_dir(temp_dir.path())
             .status();
         let _ = Command::new("sh")
-            .args(["-c", "printf 'init' > README.md && git add README.md && git commit -qm 'init'"])
+            .args([
+                "-c",
+                "printf 'init' > README.md && git add README.md && git commit -qm 'init'",
+            ])
             .current_dir(temp_dir.path())
             .status();
 

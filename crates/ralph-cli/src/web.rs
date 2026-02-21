@@ -309,7 +309,11 @@ pub async fn execute(args: WebArgs) -> Result<()> {
     println!("Using workspace: {}", workspace_root.display());
 
     // Spawn backend (default Rust RPC API, optional legacy Node backend) and frontend.
-    let backend_label = if args.legacy_node_api { "backend" } else { "api" };
+    let backend_label = if args.legacy_node_api {
+        "backend"
+    } else {
+        "api"
+    };
     let backend_ready_pattern = if args.legacy_node_api {
         "Server started on"
     } else {
@@ -642,7 +646,8 @@ mod tests {
         let err = check_node_with(node_path.as_os_str()).expect_err("node failure");
         let msg = format!("{err}");
         assert!(
-            msg.contains("Failed to run `node --version`") || msg.contains("Node.js is not installed"),
+            msg.contains("Failed to run `node --version`")
+                || msg.contains("Node.js is not installed"),
             "msg: {msg}"
         );
     }

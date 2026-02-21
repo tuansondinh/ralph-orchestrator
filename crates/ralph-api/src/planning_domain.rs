@@ -189,7 +189,10 @@ impl PlanningDomain {
         })
     }
 
-    pub fn start(&mut self, params: PlanningStartParams) -> Result<PlanningSessionRecord, ApiError> {
+    pub fn start(
+        &mut self,
+        params: PlanningStartParams,
+    ) -> Result<PlanningSessionRecord, ApiError> {
         self.ensure_sessions_dir()?;
 
         let session_id = self.next_session_id();
@@ -261,7 +264,10 @@ impl PlanningDomain {
         })
     }
 
-    pub fn get_artifact(&self, params: PlanningGetArtifactParams) -> Result<ArtifactRecord, ApiError> {
+    pub fn get_artifact(
+        &self,
+        params: PlanningGetArtifactParams,
+    ) -> Result<ArtifactRecord, ApiError> {
         if is_invalid_filename(&params.filename) {
             return Err(ApiError::invalid_params(
                 "planning.get_artifact filename cannot include path traversal",
@@ -320,8 +326,8 @@ impl PlanningDomain {
     fn read_metadata(&self, session_id: &str) -> Result<SessionMetadata, ApiError> {
         let path = self.metadata_path(session_id);
 
-        let content = fs::read_to_string(&path)
-            .map_err(|_| planning_session_not_found_error(session_id))?;
+        let content =
+            fs::read_to_string(&path).map_err(|_| planning_session_not_found_error(session_id))?;
 
         serde_json::from_str::<SessionMetadata>(&content).map_err(|error| {
             ApiError::internal(format!(
@@ -364,10 +370,15 @@ impl PlanningDomain {
         })
     }
 
-    fn append_conversation(&self, session_id: &str, entry: &ConversationEntry) -> Result<(), ApiError> {
+    fn append_conversation(
+        &self,
+        session_id: &str,
+        entry: &ConversationEntry,
+    ) -> Result<(), ApiError> {
         let path = self.conversation_path(session_id);
-        let mut payload = serde_json::to_string(entry)
-            .map_err(|error| ApiError::internal(format!("failed serializing conversation entry: {error}")))?;
+        let mut payload = serde_json::to_string(entry).map_err(|error| {
+            ApiError::internal(format!("failed serializing conversation entry: {error}"))
+        })?;
         payload.push('\n');
 
         use std::io::Write;
@@ -419,8 +430,13 @@ impl PlanningDomain {
             return 0;
         };
 
-        u64::try_from(content.lines().filter(|line| !line.trim().is_empty()).count())
-            .unwrap_or(u64::MAX)
+        u64::try_from(
+            content
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count(),
+        )
+        .unwrap_or(u64::MAX)
     }
 
     fn read_artifacts(&self, session_id: &str) -> Vec<String> {
@@ -431,7 +447,12 @@ impl PlanningDomain {
 
         let mut artifacts: Vec<String> = entries
             .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_name().to_str().map(std::string::ToString::to_string))
+            .filter_map(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(std::string::ToString::to_string)
+            })
             .filter(|name| !name.starts_with('.'))
             .collect();
         artifacts.sort();

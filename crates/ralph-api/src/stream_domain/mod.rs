@@ -12,7 +12,9 @@ use tokio::sync::broadcast;
 use crate::errors::ApiError;
 use crate::protocol::{API_VERSION, STREAM_NAME, STREAM_TOPICS};
 
-use self::filters::{SubscriptionFilters, cursor_is_older, cursor_sequence, normalize_topics, validate_cursor};
+use self::filters::{
+    SubscriptionFilters, cursor_is_older, cursor_sequence, normalize_topics, validate_cursor,
+};
 
 pub const KEEPALIVE_INTERVAL_MS: u64 = 15_000;
 
@@ -123,7 +125,10 @@ impl StreamDomain {
         }
     }
 
-    pub fn subscribe(&self, params: StreamSubscribeParams) -> Result<StreamSubscribeResult, ApiError> {
+    pub fn subscribe(
+        &self,
+        params: StreamSubscribeParams,
+    ) -> Result<StreamSubscribeResult, ApiError> {
         let accepted_topics = normalize_topics(&params.topics, STREAM_TOPICS)?;
         let cursor = if let Some(cursor) = &params.cursor {
             validate_cursor(cursor)?;
@@ -284,7 +289,11 @@ impl StreamDomain {
         )
     }
 
-    pub fn backpressure_event(&self, subscription_id: &str, dropped_count: usize) -> StreamEventEnvelope {
+    pub fn backpressure_event(
+        &self,
+        subscription_id: &str,
+        dropped_count: usize,
+    ) -> StreamEventEnvelope {
         self.ephemeral_event(
             "error.raised",
             "stream",

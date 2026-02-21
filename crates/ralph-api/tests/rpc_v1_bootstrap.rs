@@ -22,7 +22,9 @@ impl TestServer {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
-        let local_addr = listener.local_addr().expect("listener local addr should exist");
+        let local_addr = listener
+            .local_addr()
+            .expect("listener local addr should exist");
         let runtime = RpcRuntime::new(config);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 

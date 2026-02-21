@@ -52,7 +52,8 @@ impl PresetDomain {
         directory.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
         collection_presets.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
 
-        let mut presets = Vec::with_capacity(builtin.len() + directory.len() + collection_presets.len());
+        let mut presets =
+            Vec::with_capacity(builtin.len() + directory.len() + collection_presets.len());
         presets.extend(builtin);
         presets.extend(directory);
         presets.extend(collection_presets);

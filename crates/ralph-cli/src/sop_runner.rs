@@ -221,9 +221,9 @@ fn validate_backend_name(name: &str) -> Result<(), SopRunError> {
     if backend_support::is_known_backend(name) {
         Ok(())
     } else {
-        Err(SopRunError::UnknownBackend(backend_support::unknown_backend_message(
-            name,
-        )))
+        Err(SopRunError::UnknownBackend(
+            backend_support::unknown_backend_message(name),
+        ))
     }
 }
 

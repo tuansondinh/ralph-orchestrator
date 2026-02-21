@@ -149,7 +149,9 @@ pub struct CollectionDomain {
 
 impl CollectionDomain {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
-        let store_path = workspace_root.as_ref().join(".ralph/api/collections-v1.json");
+        let store_path = workspace_root
+            .as_ref()
+            .join(".ralph/api/collections-v1.json");
         let mut domain = Self {
             store_path,
             collections: BTreeMap::new(),
@@ -243,10 +245,9 @@ impl CollectionDomain {
         self.create(CollectionCreateParams {
             name: params.name,
             description: params.description,
-            graph: Some(
-                serde_json::to_value(graph)
-                    .map_err(|error| ApiError::internal(format!("failed serializing graph: {error}")))?,
-            ),
+            graph: Some(serde_json::to_value(graph).map_err(|error| {
+                ApiError::internal(format!("failed serializing graph: {error}"))
+            })?),
         })
     }
 

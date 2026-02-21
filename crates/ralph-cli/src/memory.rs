@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use ralph_core::{truncate_with_ellipsis, MarkdownMemoryStore, Memory, MemoryType};
+use ralph_core::{MarkdownMemoryStore, Memory, MemoryType, truncate_with_ellipsis};
 use std::path::PathBuf;
 
 /// ANSI color codes for terminal output.
@@ -472,12 +472,14 @@ fn prime_command(store: &MarkdownMemoryStore, args: PrimeArgs) -> Result<()> {
         OutputFormat::Json => serde_json::to_string_pretty(&memories)?,
         OutputFormat::Markdown => format_memories_as_markdown(&memories),
         OutputFormat::Table => format_memories_as_text(&memories),
-        OutputFormat::Quiet => memories
-            .iter()
-            .map(|m| m.id.clone())
-            .collect::<Vec<_>>()
-            .join("\n")
-            + if !memories.is_empty() { "\n" } else { "" },
+        OutputFormat::Quiet => {
+            memories
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + if memories.is_empty() { "" } else { "\n" }
+        }
     };
 
     // Apply budget if specified
@@ -724,7 +726,12 @@ fn format_memories_as_text(memories: &[Memory]) -> String {
     let mut output = String::new();
 
     for memory in memories {
-        output.push_str(&format!("# {} [{}]\n{}\n", memory.id, memory.memory_type.section_name(), memory.content));
+        output.push_str(&format!(
+            "# {} [{}]\n{}\n",
+            memory.id,
+            memory.memory_type.section_name(),
+            memory.content
+        ));
         if !memory.tags.is_empty() {
             output.push_str(&format!("Tags: {}\n", memory.tags.join(", ")));
         }

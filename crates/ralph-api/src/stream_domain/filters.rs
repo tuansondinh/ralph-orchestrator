@@ -52,7 +52,10 @@ impl SubscriptionFilters {
     }
 }
 
-pub(super) fn normalize_topics(topics: &[String], known_topics: &[&str]) -> Result<Vec<String>, ApiError> {
+pub(super) fn normalize_topics(
+    topics: &[String],
+    known_topics: &[&str],
+) -> Result<Vec<String>, ApiError> {
     if topics.is_empty() {
         return Err(ApiError::invalid_params(
             "stream.subscribe requires at least one topic",
@@ -65,10 +68,10 @@ pub(super) fn normalize_topics(topics: &[String], known_topics: &[&str]) -> Resu
 
     for topic in topics {
         if !known_topics.contains(topic.as_str()) {
-            return Err(ApiError::invalid_params(format!(
-                "unknown stream topic '{topic}'"
-            ))
-            .with_details(json!({ "topic": topic, "knownTopics": known_topics })));
+            return Err(
+                ApiError::invalid_params(format!("unknown stream topic '{topic}'"))
+                    .with_details(json!({ "topic": topic, "knownTopics": known_topics })),
+            );
         }
 
         if dedupe.insert(topic.clone()) {

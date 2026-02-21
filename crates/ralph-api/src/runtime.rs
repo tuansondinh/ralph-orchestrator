@@ -5,12 +5,12 @@ use std::time::Duration;
 
 use axum::http::{HeaderMap, StatusCode};
 use chrono::{SecondsFormat, Utc};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 use tracing::debug;
 
-use crate::auth::{from_config, Authenticator};
+use crate::auth::{Authenticator, from_config};
 use crate::collection_domain::CollectionDomain;
 use crate::config::ApiConfig;
 use crate::config_domain::ConfigDomain;
@@ -22,7 +22,7 @@ use crate::loop_domain::LoopDomain;
 use crate::planning_domain::PlanningDomain;
 use crate::preset_domain::PresetDomain;
 use crate::protocol::{
-    API_VERSION, KNOWN_METHODS, STREAM_TOPICS, RpcRequestEnvelope, error_envelope, is_known_method,
+    API_VERSION, KNOWN_METHODS, RpcRequestEnvelope, STREAM_TOPICS, error_envelope, is_known_method,
     is_mutating_method, parse_json_value, parse_request, request_context, success_envelope,
     validate_request_schema,
 };
@@ -141,17 +141,19 @@ impl RpcRuntime {
             {
                 Some(key) => key,
                 None => {
-                    let error = ApiError::invalid_params(
-                        "mutating methods require meta.idempotencyKey",
-                    )
-                    .with_context(request.id.clone(), Some(request.method.clone()));
+                    let error =
+                        ApiError::invalid_params("mutating methods require meta.idempotencyKey")
+                            .with_context(request.id.clone(), Some(request.method.clone()));
                     let status = error.status;
                     let envelope = error_envelope(&error, &self.config.served_by);
                     return (status, envelope);
                 }
             };
 
-            match self.idempotency.check(&request.method, key, &request.params) {
+            match self
+                .idempotency
+                .check(&request.method, key, &request.params)
+            {
                 IdempotencyCheck::Replay(response) => {
                     debug!(
                         method = %request.method,
@@ -226,7 +228,9 @@ impl RpcRuntime {
             .map_err(|_| ApiError::internal("planning domain lock poisoned"))
     }
 
-    pub(crate) fn collection_domain_mut(&self) -> Result<MutexGuard<'_, CollectionDomain>, ApiError> {
+    pub(crate) fn collection_domain_mut(
+        &self,
+    ) -> Result<MutexGuard<'_, CollectionDomain>, ApiError> {
         self.collections
             .lock()
             .map_err(|_| ApiError::internal("collection domain lock poisoned"))
@@ -261,8 +265,10 @@ impl RpcRuntime {
         let (request_id, method) = request_context(&raw);
 
         if !raw.is_object() {
-            return Err(ApiError::invalid_request("request body must be a JSON object")
-                .with_context(request_id, method));
+            return Err(
+                ApiError::invalid_request("request body must be a JSON object")
+                    .with_context(request_id, method),
+            );
         }
 
         let method = method.ok_or_else(|| {
@@ -276,9 +282,11 @@ impl RpcRuntime {
         }
 
         if let Err(errors) = validate_request_schema(&raw) {
-            return Err(ApiError::invalid_params("request does not match rpc-v1 schema")
-                .with_context(request_id.clone(), Some(method.clone()))
-                .with_details(json!({ "errors": errors })));
+            return Err(
+                ApiError::invalid_params("request does not match rpc-v1 schema")
+                    .with_context(request_id.clone(), Some(method.clone()))
+                    .with_details(json!({ "errors": errors })),
+            );
         }
 
         let request = parse_request(&raw)

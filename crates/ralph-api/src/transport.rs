@@ -185,7 +185,10 @@ async fn stream_connection(
     }
 }
 
-async fn send_stream_event(socket: &mut WebSocket, event: &crate::stream_domain::StreamEventEnvelope) -> bool {
+async fn send_stream_event(
+    socket: &mut WebSocket,
+    event: &crate::stream_domain::StreamEventEnvelope,
+) -> bool {
     match serde_json::to_string(event) {
         Ok(serialized) => socket.send(Message::Text(serialized.into())).await.is_ok(),
         Err(error) => {

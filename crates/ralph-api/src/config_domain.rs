@@ -42,7 +42,9 @@ impl ConfigDomain {
 
     pub fn get(&self) -> Result<ConfigGetResult, ApiError> {
         if !self.config_path.exists() {
-            return Err(ApiError::not_found("configuration file not found at ralph.yml"));
+            return Err(ApiError::not_found(
+                "configuration file not found at ralph.yml",
+            ));
         }
 
         let raw = fs::read_to_string(&self.config_path).map_err(|error| {
@@ -78,7 +80,8 @@ impl ConfigDomain {
 }
 
 fn parse_yaml_to_json_object(content: &str) -> Result<serde_json::Map<String, Value>, String> {
-    let yaml_value: serde_yaml::Value = serde_yaml::from_str(content).map_err(|error| error.to_string())?;
+    let yaml_value: serde_yaml::Value =
+        serde_yaml::from_str(content).map_err(|error| error.to_string())?;
     let json_value = serde_json::to_value(yaml_value).map_err(|error| error.to_string())?;
 
     match json_value {

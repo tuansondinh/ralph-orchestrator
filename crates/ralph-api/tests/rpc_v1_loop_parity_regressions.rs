@@ -2,10 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, ensure};
-use reqwest::Client;
 use ralph_core::{
     LoopEntry, LoopLock, LoopRegistry, MergeQueue, MergeState, WorktreeConfig, create_worktree,
 };
+use reqwest::Client;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -28,7 +28,9 @@ impl TestServer {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
-        let local_addr = listener.local_addr().expect("listener local addr should exist");
+        let local_addr = listener
+            .local_addr()
+            .expect("listener local addr should exist");
         let runtime = RpcRuntime::new(config);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -147,7 +149,12 @@ async fn loop_stop_unknown_id_returns_loop_not_found_with_primary_lock() -> Resu
 
     assert_eq!(status, 404);
     assert_eq!(payload["error"]["code"], "LOOP_NOT_FOUND");
-    assert!(!server.workspace_path().join(".ralph/stop-requested").exists());
+    assert!(
+        !server
+            .workspace_path()
+            .join(".ralph/stop-requested")
+            .exists()
+    );
 
     server.stop().await;
     Ok(())

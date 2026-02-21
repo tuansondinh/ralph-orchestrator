@@ -145,11 +145,10 @@ impl TaskDomain {
 
     pub fn create(&mut self, params: TaskCreateParams) -> Result<TaskRecord, ApiError> {
         if self.tasks.contains_key(&params.id) {
-            return Err(ApiError::conflict(format!(
-                "Task with id '{}' already exists",
-                params.id
-            ))
-            .with_details(serde_json::json!({ "taskId": params.id })));
+            return Err(
+                ApiError::conflict(format!("Task with id '{}' already exists", params.id))
+                    .with_details(serde_json::json!({ "taskId": params.id })),
+            );
         }
 
         let now = now_ts();
@@ -305,13 +304,14 @@ impl TaskDomain {
                 .ok_or_else(|| task_not_found_error(id))?;
 
             if task.status != "failed" {
-                return Err(ApiError::precondition_failed(
-                    "Only failed tasks can be retried",
-                )
-                .with_details(serde_json::json!({
-                    "taskId": id,
-                    "status": task.status,
-                })));
+                return Err(
+                    ApiError::precondition_failed("Only failed tasks can be retried").with_details(
+                        serde_json::json!({
+                            "taskId": id,
+                            "status": task.status,
+                        }),
+                    ),
+                );
             }
 
             let now = now_ts();
@@ -361,7 +361,8 @@ impl TaskDomain {
             };
         };
 
-        let is_queued = task.queued_task_id.is_some() && matches!(task.status.as_str(), "pending" | "running");
+        let is_queued =
+            task.queued_task_id.is_some() && matches!(task.status.as_str(), "pending" | "running");
 
         let queue_position = if is_queued {
             self.queue_position(id)
@@ -410,19 +411,24 @@ impl TaskDomain {
             .ok_or_else(|| task_not_found_error(id))?;
 
         if task.archived_at.is_some() {
-            return Err(ApiError::precondition_failed("Cannot run archived task").with_details(
-                serde_json::json!({
-                    "taskId": id,
-                }),
-            ));
+            return Err(
+                ApiError::precondition_failed("Cannot run archived task").with_details(
+                    serde_json::json!({
+                        "taskId": id,
+                    }),
+                ),
+            );
         }
 
         if matches!(task.status.as_str(), "pending" | "running") {
-            return Err(ApiError::precondition_failed("Task is already queued or running")
-                .with_details(serde_json::json!({
-                    "taskId": id,
-                    "status": task.status
-                })));
+            return Err(
+                ApiError::precondition_failed("Task is already queued or running").with_details(
+                    serde_json::json!({
+                        "taskId": id,
+                        "status": task.status
+                    }),
+                ),
+            );
         }
 
         task.status = "pending".to_string();
@@ -440,7 +446,8 @@ impl TaskDomain {
             .tasks
             .values()
             .filter(|task| {
-                task.queued_task_id.is_some() && matches!(task.status.as_str(), "pending" | "running")
+                task.queued_task_id.is_some()
+                    && matches!(task.status.as_str(), "pending" | "running")
             })
             .collect();
         queued.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
@@ -473,7 +480,6 @@ impl TaskDomain {
         tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         tasks
     }
-
 }
 
 fn task_not_found_error(task_id: &str) -> ApiError {

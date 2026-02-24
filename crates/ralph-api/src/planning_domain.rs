@@ -108,14 +108,12 @@ pub struct FrontendConversationEntry {
 
 pub struct PlanningDomain {
     sessions_dir: PathBuf,
-    id_counter: u64,
 }
 
 impl PlanningDomain {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
         Self {
             sessions_dir: workspace_root.as_ref().join(".ralph/planning-sessions"),
-            id_counter: 0,
         }
     }
 
@@ -195,8 +193,8 @@ impl PlanningDomain {
     ) -> Result<PlanningSessionRecord, ApiError> {
         self.ensure_sessions_dir()?;
 
-        let session_id = self.next_session_id();
-        let session_dir = self.session_dir(&session_id);
+        let (session_id, session_dir) = self.create_unique_session_dir()?;
+
         fs::create_dir_all(session_dir.join("artifacts")).map_err(|error| {
             ApiError::internal(format!(
                 "failed creating planning session directory '{}': {error}",
@@ -293,13 +291,34 @@ impl PlanningDomain {
         })
     }
 
-    fn next_session_id(&mut self) -> String {
-        self.id_counter = self.id_counter.saturating_add(1);
+    fn next_session_id(&self) -> String {
         format!(
-            "{}-{:04x}",
+            "{}-{}",
             Utc::now().format("%Y%m%dT%H%M%S"),
-            self.id_counter
+            uuid::Uuid::new_v4().simple()
         )
+    }
+
+    fn create_unique_session_dir(&self) -> Result<(String, PathBuf), ApiError> {
+        for _ in 0..8 {
+            let session_id = self.next_session_id();
+            let session_dir = self.session_dir(&session_id);
+
+            match fs::create_dir(&session_dir) {
+                Ok(()) => return Ok((session_id, session_dir)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(ApiError::internal(format!(
+                        "failed creating planning session directory '{}': {error}",
+                        session_dir.display()
+                    )));
+                }
+            }
+        }
+
+        Err(ApiError::internal(
+            "failed allocating unique planning session id after multiple attempts",
+        ))
     }
 
     fn ensure_sessions_dir(&self) -> Result<(), ApiError> {

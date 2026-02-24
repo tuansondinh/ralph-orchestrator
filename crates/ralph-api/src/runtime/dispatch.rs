@@ -18,7 +18,7 @@ use crate::stream_domain::{StreamAckParams, StreamSubscribeParams, StreamUnsubsc
 use crate::task_domain::{TaskCreateParams, TaskListParams, TaskUpdateInput};
 
 impl RpcRuntime {
-    pub(super) fn dispatch(&self, request: &RpcRequestEnvelope) -> Result<Value, ApiError> {
+    pub(super) fn dispatch(&self, request: &RpcRequestEnvelope, principal: &str) -> Result<Value, ApiError> {
         let result = match request.method.as_str() {
             "system.health" => Ok(self.health_payload()),
             "system.version" => Ok(json!({
@@ -32,7 +32,7 @@ impl RpcRuntime {
             method if method.starts_with("config.") => self.dispatch_config(request),
             method if method.starts_with("preset.") => self.dispatch_preset(request),
             method if method.starts_with("collection.") => self.dispatch_collection(request),
-            method if method.starts_with("stream.") => self.dispatch_stream(request),
+            method if method.starts_with("stream.") => self.dispatch_stream(request, principal),
             _ => {
                 warn!(
                     method = %request.method,
@@ -312,11 +312,11 @@ impl RpcRuntime {
         }
     }
 
-    fn dispatch_stream(&self, request: &RpcRequestEnvelope) -> Result<Value, ApiError> {
+    fn dispatch_stream(&self, request: &RpcRequestEnvelope, principal: &str) -> Result<Value, ApiError> {
         match request.method.as_str() {
             "stream.subscribe" => {
                 let params: StreamSubscribeParams = self.parse_params(request)?;
-                let result = self.stream_domain().subscribe(params)?;
+                let result = self.stream_domain().subscribe(params, principal)?;
                 Ok(json!(result))
             }
             "stream.unsubscribe" => {

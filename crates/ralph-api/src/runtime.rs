@@ -50,13 +50,15 @@ pub struct RpcRuntime {
 }
 
 impl RpcRuntime {
-    pub fn new(config: ApiConfig) -> Self {
-        let auth = from_config(&config);
+    pub fn new(config: ApiConfig) -> anyhow::Result<Self> {
+        config.validate()?;
+
+        let auth = from_config(&config)?;
         let idempotency = Arc::new(InMemoryIdempotencyStore::new(Duration::from_secs(
             config.idempotency_ttl_secs,
         )));
 
-        Self::with_components(config, auth, idempotency)
+        Ok(Self::with_components(config, auth, idempotency))
     }
 
     pub fn with_components(
@@ -122,15 +124,18 @@ impl RpcRuntime {
             }
         };
 
-        if let Err(error) = self
+        let principal = match self
             .auth
             .authorize(&request, headers)
             .map_err(|error| error.with_context(request.id.clone(), Some(request.method.clone())))
         {
-            let status = error.status;
-            let envelope = error_envelope(&error, &self.config.served_by);
-            return (status, envelope);
-        }
+            Ok(p) => p,
+            Err(error) => {
+                let status = error.status;
+                let envelope = error_envelope(&error, &self.config.served_by);
+                return (status, envelope);
+            }
+        };
 
         let mut idempotency_context: Option<String> = None;
         if is_mutating_method(&request.method) {
@@ -182,7 +187,7 @@ impl RpcRuntime {
             }
         }
 
-        let (status, envelope) = match self.dispatch(&request) {
+        let (status, envelope) = match self.dispatch(&request, &principal) {
             Ok(result) => (
                 StatusCode::OK,
                 success_envelope(&request, result, &self.config.served_by),
@@ -208,6 +213,20 @@ impl RpcRuntime {
         }
 
         (status, envelope)
+    }
+
+    pub fn authenticate_websocket(&self, headers: &HeaderMap) -> Result<String, ApiError> {
+        let dummy_request = crate::protocol::RpcRequestEnvelope {
+            api_version: "v1".to_string(),
+            id: "ws-upgrade".to_string(),
+            method: "stream.subscribe".to_string(),
+            params: serde_json::Value::Object(serde_json::Map::new()),
+            meta: None,
+        };
+
+        self.auth
+            .authorize(&dummy_request, headers)
+            .map_err(|error| error.with_context("ws-upgrade", Some("stream.subscribe".to_string())))
     }
 
     pub(crate) fn task_domain_mut(&self) -> Result<MutexGuard<'_, TaskDomain>, ApiError> {

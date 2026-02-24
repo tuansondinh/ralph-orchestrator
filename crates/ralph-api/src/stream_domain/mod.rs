@@ -102,6 +102,7 @@ struct SubscriptionRecord {
     cursor: String,
     replay_limit: usize,
     explicit_cursor: bool,
+    principal: String,
 }
 
 struct StreamState {
@@ -128,6 +129,7 @@ impl StreamDomain {
     pub fn subscribe(
         &self,
         params: StreamSubscribeParams,
+        principal: &str,
     ) -> Result<StreamSubscribeResult, ApiError> {
         let accepted_topics = normalize_topics(&params.topics, STREAM_TOPICS)?;
         let cursor = if let Some(cursor) = &params.cursor {
@@ -157,6 +159,7 @@ impl StreamDomain {
                 cursor: cursor.clone(),
                 replay_limit,
                 explicit_cursor: params.cursor.is_some(),
+                principal: principal.to_string(),
             },
         );
 
@@ -165,6 +168,11 @@ impl StreamDomain {
             accepted_topics,
             cursor,
         })
+    }
+
+    pub fn get_subscription_principal(&self, subscription_id: &str) -> Option<String> {
+        let state = self.lock_state().ok()?;
+        state.subscriptions.get(subscription_id).map(|s| s.principal.clone())
     }
 
     pub fn unsubscribe(&self, params: StreamUnsubscribeParams) -> Result<(), ApiError> {

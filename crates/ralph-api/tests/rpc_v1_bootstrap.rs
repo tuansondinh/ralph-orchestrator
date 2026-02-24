@@ -25,7 +25,7 @@ impl TestServer {
         let local_addr = listener
             .local_addr()
             .expect("listener local addr should exist");
-        let runtime = RpcRuntime::new(config);
+        let runtime = RpcRuntime::new(config).expect("runtime should initialize");
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let join = tokio::spawn(async move {

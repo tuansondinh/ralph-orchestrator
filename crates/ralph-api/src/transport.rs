@@ -50,7 +50,7 @@ pub async fn serve(config: ApiConfig) -> Result<()> {
         "starting ralph-api server"
     );
 
-    let runtime = RpcRuntime::new(config);
+    let runtime = RpcRuntime::new(config)?;
     serve_with_listener(listener, runtime, shutdown_signal()).await
 }
 
@@ -93,15 +93,26 @@ async fn rpc_handler(
 async fn stream_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<StreamQuery>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| stream_connection(socket, state.runtime, query.subscription_id))
+    let principal = match state.runtime.authenticate_websocket(&headers) {
+        Ok(p) => p,
+        Err(error) => {
+            let status = error.status;
+            let error_payload = crate::protocol::error_envelope(&error, &state.runtime.config.served_by);
+            return (status, Json(error_payload)).into_response();
+        }
+    };
+
+    ws.on_upgrade(move |socket| stream_connection(socket, state.runtime, query.subscription_id, principal))
 }
 
 async fn stream_connection(
     mut socket: WebSocket,
     runtime: RpcRuntime,
     subscription_id: Option<String>,
+    principal: String,
 ) {
     let Some(subscription_id) = subscription_id else {
         warn!("stream connection missing subscriptionId query parameter");
@@ -112,6 +123,12 @@ async fn stream_connection(
     let streams = runtime.stream_domain();
     if !streams.has_subscription(&subscription_id) {
         warn!(subscription_id, "stream subscription does not exist");
+        let _ = socket.close().await;
+        return;
+    }
+
+    if streams.get_subscription_principal(&subscription_id).as_deref() != Some(principal.as_str()) {
+        warn!(subscription_id, "stream connection auth principal mismatch");
         let _ = socket.close().await;
         return;
     }

@@ -33,7 +33,7 @@ impl TestServer {
         let local_addr = listener
             .local_addr()
             .expect("listener local addr should exist");
-        let runtime = RpcRuntime::new(config);
+        let runtime = RpcRuntime::new(config).expect("runtime should initialize");
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let join = tokio::spawn(async move {
@@ -64,17 +64,30 @@ impl TestServer {
     }
 }
 
-async fn post_rpc(client: &Client, server: &TestServer, body: &Value) -> Result<(u16, Value)> {
-    let response = client
+async fn post_rpc_with_token(
+    client: &Client,
+    server: &TestServer,
+    body: &Value,
+    token: Option<&str>,
+) -> Result<(u16, Value)> {
+    let mut request = client
         .post(format!("{}/rpc/v1", server.base_url))
         .header("content-type", "application/json")
-        .json(body)
-        .send()
-        .await?;
+        .json(body);
+
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+
+    let response = request.send().await?;
 
     let status = response.status().as_u16();
     let payload = response.json::<Value>().await?;
     Ok((status, payload))
+}
+
+async fn post_rpc(client: &Client, server: &TestServer, body: &Value) -> Result<(u16, Value)> {
+    post_rpc_with_token(client, server, body, None).await
 }
 
 fn rpc_request(id: &str, method: &str, params: Value, idempotency_key: Option<&str>) -> Value {
@@ -94,13 +107,33 @@ fn rpc_request(id: &str, method: &str, params: Value, idempotency_key: Option<&s
     request
 }
 
-async fn open_stream(server: &TestServer, subscription_id: &str) -> Result<WsStream> {
+async fn open_stream_with_token(
+    server: &TestServer,
+    subscription_id: &str,
+    token: Option<&str>,
+) -> Result<WsStream> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
     let url = format!(
         "{}/rpc/v1/stream?subscriptionId={subscription_id}",
         server.ws_url()
     );
-    let (stream, _) = connect_async(url).await?;
+
+    let mut request = url.into_client_request()?;
+    if let Some(token) = token {
+        let header_value = format!("Bearer {token}");
+        request.headers_mut().insert(
+            "Authorization",
+            header_value.parse().expect("valid auth header"),
+        );
+    }
+
+    let (stream, _) = connect_async(request).await?;
     Ok(stream)
+}
+
+async fn open_stream(server: &TestServer, subscription_id: &str) -> Result<WsStream> {
+    open_stream_with_token(server, subscription_id, None).await
 }
 
 async fn recv_topic_event(stream: &mut WsStream, topic: &str) -> Value {
@@ -498,6 +531,49 @@ async fn reconnect_with_ack_cursor_replays_only_new_events() -> Result<()> {
     );
 
     reconnect_stream.close(None).await?;
+    server.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn token_mode_stream_requires_matching_ws_principal() -> Result<()> {
+    let mut config = ApiConfig::default();
+    config.auth_mode = ralph_api::AuthMode::Token;
+    config.token = Some("super-secret-token".to_string());
+
+    let server = TestServer::start(config).await;
+    let client = Client::new();
+
+    let subscribe = rpc_request(
+        "req-stream-token-subscribe-1",
+        "stream.subscribe",
+        json!({
+            "topics": ["task.status.changed"],
+            "filters": { "resourceIds": ["task-token-1"] }
+        }),
+        None,
+    );
+
+    let (status, subscribe_payload) =
+        post_rpc_with_token(&client, &server, &subscribe, Some("super-secret-token")).await?;
+    assert_eq!(status, 200);
+
+    let subscription_id = subscribe_payload["result"]["subscriptionId"]
+        .as_str()
+        .expect("subscription id should be present")
+        .to_string();
+
+    let no_token_result = open_stream_with_token(&server, &subscription_id, None).await;
+    assert!(no_token_result.is_err());
+
+    let wrong_token_result =
+        open_stream_with_token(&server, &subscription_id, Some("wrong-token")).await;
+    assert!(wrong_token_result.is_err());
+
+    let mut stream =
+        open_stream_with_token(&server, &subscription_id, Some("super-secret-token")).await?;
+    stream.close(None).await?;
+
     server.stop().await;
     Ok(())
 }

@@ -114,6 +114,20 @@ impl ApiConfig {
             config.ralph_command = ralph_command;
         }
 
+        config.validate()?;
         Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.auth_mode == AuthMode::Token
+            && self
+                .token
+                .as_deref()
+                .is_none_or(|token| token.trim().is_empty())
+        {
+            anyhow::bail!("RALPH_API_TOKEN must be configured when auth mode is token");
+        }
+
+        Ok(())
     }
 }

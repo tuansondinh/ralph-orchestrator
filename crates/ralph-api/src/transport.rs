@@ -118,12 +118,15 @@ async fn stream_handler(
         Ok(p) => p,
         Err(error) => {
             let status = error.status;
-            let error_payload = crate::protocol::error_envelope(&error, &state.runtime.config.served_by);
+            let error_payload =
+                crate::protocol::error_envelope(&error, &state.runtime.config.served_by);
             return (status, Json(error_payload)).into_response();
         }
     };
 
-    ws.on_upgrade(move |socket| stream_connection(socket, state.runtime, query.subscription_id, principal))
+    ws.on_upgrade(move |socket| {
+        stream_connection(socket, state.runtime, query.subscription_id, principal)
+    })
 }
 
 async fn stream_connection(
@@ -145,7 +148,11 @@ async fn stream_connection(
         return;
     }
 
-    if streams.get_subscription_principal(&subscription_id).as_deref() != Some(principal.as_str()) {
+    if streams
+        .get_subscription_principal(&subscription_id)
+        .as_deref()
+        != Some(principal.as_str())
+    {
         warn!(subscription_id, "stream connection auth principal mismatch");
         let _ = socket.close().await;
         return;

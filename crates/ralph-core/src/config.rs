@@ -1680,7 +1680,10 @@ project:
 "#;
         let result = RalphConfig::parse_yaml(yaml);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::DeprecatedProjectKey));
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::DeprecatedProjectKey
+        ));
     }
 
     #[test]

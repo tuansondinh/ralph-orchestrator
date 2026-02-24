@@ -18,7 +18,11 @@ use crate::stream_domain::{StreamAckParams, StreamSubscribeParams, StreamUnsubsc
 use crate::task_domain::{TaskCreateParams, TaskListParams, TaskUpdateInput};
 
 impl RpcRuntime {
-    pub(super) fn dispatch(&self, request: &RpcRequestEnvelope, principal: &str) -> Result<Value, ApiError> {
+    pub(super) fn dispatch(
+        &self,
+        request: &RpcRequestEnvelope,
+        principal: &str,
+    ) -> Result<Value, ApiError> {
         let result = match request.method.as_str() {
             "system.health" => Ok(self.health_payload()),
             "system.version" => Ok(json!({
@@ -312,7 +316,11 @@ impl RpcRuntime {
         }
     }
 
-    fn dispatch_stream(&self, request: &RpcRequestEnvelope, principal: &str) -> Result<Value, ApiError> {
+    fn dispatch_stream(
+        &self,
+        request: &RpcRequestEnvelope,
+        principal: &str,
+    ) -> Result<Value, ApiError> {
         match request.method.as_str() {
             "stream.subscribe" => {
                 let params: StreamSubscribeParams = self.parse_params(request)?;

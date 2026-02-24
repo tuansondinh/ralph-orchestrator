@@ -8,7 +8,11 @@ use crate::errors::ApiError;
 use crate::protocol::RpcRequestEnvelope;
 
 pub trait Authenticator: Send + Sync {
-    fn authorize(&self, request: &RpcRequestEnvelope, headers: &HeaderMap) -> Result<String, ApiError>;
+    fn authorize(
+        &self,
+        request: &RpcRequestEnvelope,
+        headers: &HeaderMap,
+    ) -> Result<String, ApiError>;
     fn mode(&self) -> AuthMode;
 }
 
@@ -41,7 +45,11 @@ impl TokenAuthenticator {
 }
 
 impl Authenticator for TokenAuthenticator {
-    fn authorize(&self, request: &RpcRequestEnvelope, headers: &HeaderMap) -> Result<String, ApiError> {
+    fn authorize(
+        &self,
+        request: &RpcRequestEnvelope,
+        headers: &HeaderMap,
+    ) -> Result<String, ApiError> {
         let provided_token = token_from_header(headers).or_else(|| {
             request
                 .meta

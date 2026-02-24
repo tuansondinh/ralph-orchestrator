@@ -172,7 +172,10 @@ impl StreamDomain {
 
     pub fn get_subscription_principal(&self, subscription_id: &str) -> Option<String> {
         let state = self.lock_state().ok()?;
-        state.subscriptions.get(subscription_id).map(|s| s.principal.clone())
+        state
+            .subscriptions
+            .get(subscription_id)
+            .map(|s| s.principal.clone())
     }
 
     pub fn unsubscribe(&self, params: StreamUnsubscribeParams) -> Result<(), ApiError> {

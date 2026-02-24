@@ -124,18 +124,17 @@ impl RpcRuntime {
             }
         };
 
-        let principal = match self
-            .auth
-            .authorize(&request, headers)
-            .map_err(|error| error.with_context(request.id.clone(), Some(request.method.clone())))
-        {
-            Ok(p) => p,
-            Err(error) => {
-                let status = error.status;
-                let envelope = error_envelope(&error, &self.config.served_by);
-                return (status, envelope);
-            }
-        };
+        let principal =
+            match self.auth.authorize(&request, headers).map_err(|error| {
+                error.with_context(request.id.clone(), Some(request.method.clone()))
+            }) {
+                Ok(p) => p,
+                Err(error) => {
+                    let status = error.status;
+                    let envelope = error_envelope(&error, &self.config.served_by);
+                    return (status, envelope);
+                }
+            };
 
         let mut idempotency_context: Option<String> = None;
         if is_mutating_method(&request.method) {

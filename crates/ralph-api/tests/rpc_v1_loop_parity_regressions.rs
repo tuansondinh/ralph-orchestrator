@@ -372,7 +372,9 @@ fn create_ralph_run_interceptor() -> Option<(TempDir, PathBuf)> {
 async fn loop_process_real_ralph_flow_succeeds_with_queued_entry() -> Result<()> {
     let Some((_bin_dir, wrapper)) = create_ralph_run_interceptor() else {
         // Built binary not found; skip rather than fail (e.g. cross-compile CI).
-        eprintln!("skipping loop_process_real_ralph_flow_succeeds_with_queued_entry: ralph binary not found");
+        eprintln!(
+            "skipping loop_process_real_ralph_flow_succeeds_with_queued_entry: ralph binary not found"
+        );
         return Ok(());
     };
 

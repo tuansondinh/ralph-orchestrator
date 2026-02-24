@@ -273,7 +273,10 @@ async fn planning_methods_reject_path_traversal_session_ids() -> Result<()> {
     assert_eq!(status, 400);
     assert_eq!(payload["error"]["code"], "INVALID_PARAMS");
 
-    assert!(victim_dir.exists(), "path traversal must not delete arbitrary directories");
+    assert!(
+        victim_dir.exists(),
+        "path traversal must not delete arbitrary directories"
+    );
 
     server.stop().await;
     Ok(())
@@ -352,7 +355,10 @@ async fn planning_get_artifact_rejects_dot_file_names() -> Result<()> {
         None,
     );
     let (status, artifact_payload) = post_rpc(&client, &server, &get_artifact).await?;
-    assert_eq!(status, 404, "dot-file artifact must return 404, not contents");
+    assert_eq!(
+        status, 404,
+        "dot-file artifact must return 404, not contents"
+    );
     assert_eq!(artifact_payload["error"]["code"], "NOT_FOUND");
 
     // Sanity: a normal artifact is still accessible.

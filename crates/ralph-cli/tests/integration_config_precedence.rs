@@ -134,8 +134,7 @@ fn test_hats_file_overrides_combined_config_hats() {
     .expect("write combined config");
 
     // Hats file defines "myreviewer"
-    fs::write(&hats_path, hats_only_config("myreviewer", None))
-        .expect("write hats file");
+    fs::write(&hats_path, hats_only_config("myreviewer", None)).expect("write hats file");
 
     let out = Command::new(env!("CARGO_BIN_EXE_ralph"))
         .args([
@@ -260,8 +259,7 @@ fn test_core_specs_dir_cli_override_applies_last() {
     )
     .expect("write combined config");
 
-    fs::write(&hats_path, hats_only_config("myreviewer", None))
-        .expect("write hats file");
+    fs::write(&hats_path, hats_only_config("myreviewer", None)).expect("write hats file");
 
     let out = Command::new(env!("CARGO_BIN_EXE_ralph"))
         .args([

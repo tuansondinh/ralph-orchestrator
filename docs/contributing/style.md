@@ -19,9 +19,11 @@ Ralph Orchestrator follows Rust community conventions with project-specific addi
 # Install hooks
 ./scripts/setup-hooks.sh
 
-# Hooks run automatically on commit:
-# - cargo fmt --check
-# - cargo clippy
+# Hooks run automatically on commit (CI parity):
+# - ./scripts/sync-embedded-files.sh check
+# - cargo fmt --all -- --check
+# - cargo clippy --all-targets --all-features -- -D warnings
+# - cargo test
 ```
 
 ## Documentation Style

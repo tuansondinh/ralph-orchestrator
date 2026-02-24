@@ -1,37 +1,80 @@
-#!/bin/bash
-# Pre-commit hook: Enforce formatting and zero clippy warnings
-# Runs the same checks as CI to catch issues early
+#!/usr/bin/env bash
+# Pre-commit hook: mirror CI Rust checks locally to catch issues before push.
+# CI parity targets:
+#   1) ./scripts/sync-embedded-files.sh check
+#   2) cargo fmt --all -- --check
+#   3) cargo clippy --all-targets --all-features -- -D warnings
+#   4) cargo test
 
-set -e
+set -euo pipefail
 
-echo "🔍 Checking embedded files are in sync..."
-if ! ./scripts/sync-embedded-files.sh check; then
-    echo ""
-    echo "❌ Embedded files out of sync!"
-    echo "   Run './scripts/sync-embedded-files.sh' and commit the generated changes."
-    exit 1
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$REPO_ROOT"
+
+# Prefer CI-equivalent toolchain selection when possible.
+# CI uses: dtolnay/rust-toolchain@stable (+ rustfmt, clippy components).
+TOOLCHAIN_MODE="path"
+if command -v rustup >/dev/null 2>&1; then
+  echo "🔧 Ensuring CI-equivalent Rust toolchain (stable + rustfmt + clippy)..."
+  rustup toolchain install stable \
+    --profile minimal \
+    --component rustfmt \
+    --component clippy \
+    --no-self-update \
+    >/dev/null
+  TOOLCHAIN_MODE="rustup"
+elif command -v nix >/dev/null 2>&1; then
+  echo "⚠️  rustup not found; using nix shell toolchain fallback (may differ slightly from CI)." >&2
+  TOOLCHAIN_MODE="nix"
+else
+  echo "⚠️  rustup and nix not found; using cargo from PATH (may differ from CI stable)." >&2
 fi
-echo "✅ Embedded files are in sync"
 
-echo ""
-echo "🔍 Checking formatting..."
-if ! cargo fmt --all -- --check; then
-    echo ""
-    echo "❌ Formatting check failed!"
-    echo "   Run 'cargo fmt --all' to fix formatting issues."
-    exit 1
-fi
-echo "✅ Formatting OK"
+run_cargo() {
+  case "$TOOLCHAIN_MODE" in
+    rustup)
+      rustup run stable cargo "$@"
+      ;;
+    nix)
+      nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#rustfmt -c cargo "$@"
+      ;;
+    *)
+      cargo "$@"
+      ;;
+  esac
+}
 
-echo ""
-echo "🔍 Running clippy (warnings = errors)..."
-if ! cargo clippy --all-targets --all-features -- -D warnings 2>&1; then
-    echo ""
-    echo "❌ Clippy check failed!"
-    echo "   Fix the warnings above before committing."
+if [[ "$TOOLCHAIN_MODE" == "path" ]]; then
+  if ! cargo fmt --version >/dev/null 2>&1; then
+    echo "❌ rustfmt is not available in PATH." >&2
+    echo "   Install rustup (recommended) or rustfmt via your package manager." >&2
     exit 1
+  fi
+  if ! cargo clippy --version >/dev/null 2>&1; then
+    echo "❌ clippy is not available in PATH." >&2
+    echo "   Install rustup (recommended) or clippy via your package manager." >&2
+    exit 1
+  fi
 fi
-echo "✅ Clippy passed with no warnings!"
+
+run_check() {
+  local label="$1"
+  shift
+
+  echo ""
+  echo "🔍 ${label}..."
+  if ! "$@"; then
+    echo ""
+    echo "❌ ${label} failed!"
+    exit 1
+  fi
+  echo "✅ ${label} passed"
+}
+
+run_check "Embedded files sync check" ./scripts/sync-embedded-files.sh check
+run_check "Formatting (cargo fmt --all -- --check)" run_cargo fmt --all -- --check
+run_check "Clippy (all targets/features, warnings as errors)" run_cargo clippy --all-targets --all-features -- -D warnings
+run_check "Tests (cargo test)" run_cargo test
 
 echo ""
 echo "🎉 All pre-commit checks passed!"

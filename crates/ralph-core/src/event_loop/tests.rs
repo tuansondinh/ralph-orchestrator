@@ -1248,6 +1248,142 @@ fn test_default_publishes_not_injected_when_not_configured() {
     );
 }
 
+/// Integration test: default_publishes cascades through a 3-hat chain when agent is silent.
+///
+/// Reproduces https://github.com/mikeyobrien/ralph-orchestrator/issues/187
+///
+/// Setup: track_builder → security_reviewer → track_reviewer, all with default_publishes.
+/// The agent writes zero events every iteration. Without a fix, defaults cascade:
+///   iteration 1: track_builder silent → inject track.build.done
+///   iteration 2: security_reviewer silent → inject security_review.passed
+///   iteration 3: track_reviewer silent → inject LOOP_COMPLETE → loop completes
+///
+/// This test drives the EventLoop through the same code path as loop_runner.rs
+/// to prove the cascade happens (and will verify the fix blocks it).
+#[test]
+/// Regression test for #187: default_publishes cascades through a 3-hat chain
+/// when the agent is silent, advancing all the way to LOOP_COMPLETE with zero
+/// real work done.
+///
+/// Setup: track_builder → security_reviewer → track_reviewer, each hat's
+/// default_publishes feeds the next hat's trigger. When no agent writes events,
+/// each call to check_default_publishes injects a default that activates the
+/// next hat, which also gets a default, and so on.
+///
+/// This test documents the bug. When the fix lands, flip assertions to:
+///   assert!(injected_defaults.len() <= 1);
+///   assert!(!injected_defaults.contains(&"LOOP_COMPLETE".to_string()));
+fn test_default_publishes_cascade_on_silent_agent() {
+    use std::collections::HashMap;
+    use tempfile::tempdir;
+
+    let temp_dir = tempdir().unwrap();
+    let events_path = temp_dir.path().join("events.jsonl");
+
+    // Build a 3-hat chain where defaults cascade
+    let mut config = RalphConfig::default();
+    config.event_loop.completion_promise = "LOOP_COMPLETE".to_string();
+    config.event_loop.max_iterations = 10;
+    config.event_loop.starting_event = Some("track.build.start".to_string());
+
+    let make_hat =
+        |triggers: Vec<&str>, publishes: Vec<&str>, default: &str| crate::config::HatConfig {
+            name: String::new(),
+            description: None,
+            triggers: triggers.into_iter().map(String::from).collect(),
+            publishes: publishes.into_iter().map(String::from).collect(),
+            instructions: String::new(),
+            extra_instructions: vec![],
+            backend_args: None,
+            backend: None,
+            default_publishes: Some(default.to_string()),
+            max_activations: None,
+        };
+
+    let mut hats = HashMap::new();
+    hats.insert(
+        "track_builder".to_string(),
+        make_hat(
+            vec!["track.build.start"],
+            vec!["track.build.done"],
+            "track.build.done",
+        ),
+    );
+    hats.insert(
+        "security_reviewer".to_string(),
+        make_hat(
+            vec!["track.build.done"],
+            vec!["security_review.passed"],
+            "security_review.passed",
+        ),
+    );
+    hats.insert(
+        "track_reviewer".to_string(),
+        make_hat(
+            vec!["security_review.passed"],
+            vec!["LOOP_COMPLETE"],
+            "LOOP_COMPLETE",
+        ),
+    );
+    config.hats = hats;
+
+    let mut event_loop = EventLoop::new(config);
+    event_loop.event_reader = crate::event_reader::EventReader::new(&events_path);
+    event_loop.initialize("Reproduce issue 187");
+
+    // Run iterations: each time the agent is silent, so we inject defaults.
+    // Track which default topics get injected across all iterations.
+    let mut injected_defaults: Vec<String> = Vec::new();
+
+    for iteration in 0..10 {
+        let hat_id = event_loop
+            .next_hat()
+            .cloned()
+            .unwrap_or_else(|| HatId::new("ralph"));
+
+        // build_prompt consumes pending events and sets last_active_hat_ids
+        let _prompt = event_loop.build_prompt(&hat_id);
+
+        // Silent agent: writes nothing, but we must call process_output to
+        // advance the iteration counter (it's how EventLoop tracks progress)
+        event_loop.process_output(&hat_id, "", true);
+
+        // Silent agent: no JSONL events written
+        let result = event_loop.process_events_from_jsonl().unwrap();
+        assert!(!result.had_events, "Agent should be silent");
+
+        // Inject default for the active hat (same as loop_runner gate)
+        let active_hats = event_loop.state().last_active_hat_ids.clone();
+        for active_hat_id in &active_hats {
+            event_loop.check_default_publishes(active_hat_id);
+            if event_loop.has_pending_events() {
+                if let Some(cfg) = event_loop.registry().get_config(active_hat_id)
+                    && let Some(ref default_topic) = cfg.default_publishes
+                {
+                    injected_defaults.push(default_topic.clone());
+                }
+                break;
+            }
+        }
+
+        if event_loop.check_termination().is_some() {
+            break;
+        }
+        assert!(iteration < 9, "Should terminate before 10 iterations");
+    }
+
+    // BUG: all 3 defaults fire in sequence with zero real work
+    assert_eq!(
+        injected_defaults,
+        vec![
+            "track.build.done",
+            "security_review.passed",
+            "LOOP_COMPLETE"
+        ],
+        "Bug #187: silent agent causes full cascade through hat chain"
+    );
+}
+
 #[test]
 fn test_get_hat_backend_with_named_backend() {
     let yaml = r#"

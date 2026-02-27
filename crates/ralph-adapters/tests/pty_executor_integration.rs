@@ -321,7 +321,7 @@ mod pty_executor_integration {
     /// Live test: run the actual Pi CLI through the PTY executor.
     /// Skip if `pi` is not installed. This test makes a real API call.
     #[tokio::test]
-    #[ignore] // Requires pi CLI + API credentials; run with: cargo test -- --ignored pi_live
+    #[ignore = "Requires pi CLI + API credentials; run with: cargo test -- --ignored pi_live"]
     async fn run_observe_streaming_pi_live_garbled_text_repro() {
         // Skip if pi is not installed
         if std::process::Command::new("pi")
@@ -402,7 +402,7 @@ mod pty_executor_integration {
 
     /// Live test: run Pi with a complex prompt that generates tool calls.
     #[tokio::test]
-    #[ignore] // Requires pi CLI + API credentials
+    #[ignore = "Requires pi CLI + API credentials"]
     async fn run_observe_streaming_pi_live_complex_prompt() {
         if std::process::Command::new("pi")
             .arg("--version")
@@ -484,7 +484,7 @@ mod pty_executor_integration {
     /// Live test: run Pi with a very long prompt (simulating Ralph's hat prompt)
     /// to check if prompt length causes garbled output.
     #[tokio::test]
-    #[ignore] // Requires pi CLI + API credentials
+    #[ignore = "Requires pi CLI + API credentials"]
     async fn run_observe_streaming_pi_live_long_prompt() {
         if std::process::Command::new("pi")
             .arg("--version")

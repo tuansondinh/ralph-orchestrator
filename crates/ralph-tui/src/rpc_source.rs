@@ -47,6 +47,9 @@ pub async fn run_rpc_event_reader<R>(
 {
     let mut lines = BufReader::new(reader).lines();
     let mut received_any_event = false;
+    // Accumulates raw text deltas so markdown is rendered from the full
+    // buffer rather than per-chunk (mirrors TuiStreamHandler behaviour).
+    let mut text_accumulator = TextAccumulator::new();
 
     loop {
         tokio::select! {
@@ -72,7 +75,7 @@ pub async fn run_rpc_event_reader<R>(
                         match serde_json::from_str::<RpcEvent>(line) {
                             Ok(event) => {
                                 received_any_event = true;
-                                apply_rpc_event(&event, &state);
+                                apply_rpc_event(&event, &state, &mut text_accumulator);
                             }
                             Err(e) => {
                                 debug!(error = %e, line = %line, "Failed to parse RPC event");
@@ -128,38 +131,76 @@ pub async fn run_rpc_event_reader<R>(
     }
 }
 
-/// Freezes the current RPC text buffer into the iteration's lines.
-///
-/// When streaming text deltas arrive, they accumulate in `rpc_text_buffer` and
-/// their rendered lines are kept as "unfrozen" (replaceable) at the end of the
-/// iteration buffer. This function converts that text into permanent lines,
-/// clearing the accumulator so that subsequent non-text events (tool calls,
-/// errors) appear after the frozen text.
-fn freeze_rpc_text(s: &mut TuiState) {
-    if s.rpc_text_buffer.is_empty() {
-        return;
+/// Accumulates text deltas and non-text blocks in chronological order,
+/// mirroring the `TuiStreamHandler` content-block approach so that
+/// markdown is rendered from the full accumulated text rather than
+/// per-chunk.
+struct TextAccumulator {
+    /// Chronological content blocks for the current iteration.
+    blocks: Vec<ContentBlock>,
+    /// Current unfrozen text buffer.
+    current_text: String,
+}
+
+enum ContentBlock {
+    Text(String),
+    NonText(Line<'static>),
+}
+
+impl TextAccumulator {
+    fn new() -> Self {
+        Self {
+            blocks: Vec::new(),
+            current_text: String::new(),
+        }
     }
 
-    // The last `rpc_text_line_count` lines in the buffer are unfrozen text.
-    // They were produced from previous renders of the accumulating buffer.
-    // Now we do one final render and replace them.
-    let final_lines = text_to_lines(&s.rpc_text_buffer);
-    if let Some(handle) = s.latest_iteration_lines_handle()
-        && let Ok(mut buffer_lines) = handle.lock()
-    {
-        // Remove the previous unfrozen text lines
-        let keep = buffer_lines.len().saturating_sub(s.rpc_text_line_count);
-        buffer_lines.truncate(keep);
-        // Append the final render
-        buffer_lines.extend(final_lines);
+    /// Append a text delta and re-render all lines into the buffer.
+    fn push_text(&mut self, delta: &str, lines_handle: &Arc<Mutex<Vec<Line<'static>>>>) {
+        self.current_text.push_str(delta);
+        self.rebuild_lines(lines_handle);
     }
 
-    s.rpc_text_buffer.clear();
-    s.rpc_text_line_count = 0;
+    /// Freeze current text, add a non-text line, and re-render.
+    fn push_non_text(
+        &mut self,
+        line: Line<'static>,
+        lines_handle: &Arc<Mutex<Vec<Line<'static>>>>,
+    ) {
+        if !self.current_text.is_empty() {
+            self.blocks
+                .push(ContentBlock::Text(std::mem::take(&mut self.current_text)));
+        }
+        self.blocks.push(ContentBlock::NonText(line));
+        self.rebuild_lines(lines_handle);
+    }
+
+    /// Reset for a new iteration.
+    fn reset(&mut self) {
+        self.blocks.clear();
+        self.current_text.clear();
+    }
+
+    /// Re-render all accumulated content into the shared lines buffer.
+    fn rebuild_lines(&self, lines_handle: &Arc<Mutex<Vec<Line<'static>>>>) {
+        let mut all_lines = Vec::new();
+        for block in &self.blocks {
+            match block {
+                ContentBlock::Text(t) => all_lines.extend(text_to_lines(t)),
+                ContentBlock::NonText(l) => all_lines.push(l.clone()),
+            }
+        }
+        if !self.current_text.is_empty() {
+            all_lines.extend(text_to_lines(&self.current_text));
+        }
+        if let Ok(mut buf) = lines_handle.lock() {
+            *buf = all_lines;
+        }
+    }
 }
 
 /// Applies an RPC event to the TUI state.
-fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
+fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>, acc: &mut TextAccumulator) {
     let Ok(mut s) = state.lock() else {
         return;
     };
@@ -185,6 +226,9 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
             s.max_iterations = *max_iterations;
             s.pending_backend = Some(backend.clone());
 
+            // Reset accumulator for the new iteration
+            acc.reset();
+
             // Start a new iteration buffer with metadata
             // (this also resets the rpc text accumulation buffer)
             s.start_new_iteration_with_metadata(Some(hat_display.clone()), Some(backend.clone()));
@@ -203,7 +247,6 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
             ..
         } => {
             // Freeze any accumulated text before ending the iteration
-            freeze_rpc_text(&mut s);
 
             s.prev_iteration = s.iteration;
             s.finish_latest_iteration();
@@ -218,25 +261,9 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
         }
 
         RpcEvent::TextDelta { delta, .. } => {
-            // Accumulate text in the buffer rather than rendering each delta
-            // independently. This produces flowing paragraphs instead of
-            // one-delta-per-line garbled output.
-            s.rpc_text_buffer.push_str(delta);
-
-            // Re-render the full accumulated text to lines
-            let new_lines = text_to_lines(&s.rpc_text_buffer);
-            let new_line_count = new_lines.len();
-
-            if let Some(handle) = s.latest_iteration_lines_handle()
-                && let Ok(mut buffer_lines) = handle.lock()
-            {
-                // Remove the previous unfrozen text lines (from the last render)
-                let keep = buffer_lines.len().saturating_sub(s.rpc_text_line_count);
-                buffer_lines.truncate(keep);
-                // Append the fresh render of the full accumulated text
-                buffer_lines.extend(new_lines);
+            if let Some(handle) = s.latest_iteration_lines_handle() {
+                acc.push_text(delta, &handle);
             }
-            s.rpc_text_line_count = new_line_count;
 
             s.last_event = Some("text_delta".to_string());
             s.last_event_at = Some(Instant::now());
@@ -245,17 +272,17 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
         RpcEvent::ToolCallStart {
             tool_name, input, ..
         } => {
-            // Freeze accumulated text before adding the tool call line
-            freeze_rpc_text(&mut s);
-
-            // Format tool call header
+            // ACP titles can be descriptive ("Reading /path/to/file") or bare ("read").
+            // If the title already contains context (has a space), use it as-is.
+            // Otherwise try to extract a summary from the input JSON.
             let mut spans = vec![Span::styled(
                 format!("\u{2699} [{}]", tool_name),
                 Style::default().fg(Color::Blue),
             )];
 
-            // Add summary if available
-            if let Some(summary) = format_tool_summary(tool_name, input) {
+            if !tool_name.contains(' ')
+                && let Some(summary) = format_tool_summary(tool_name, input)
+            {
                 spans.push(Span::styled(
                     format!(" {}", summary),
                     Style::default().fg(Color::DarkGray),
@@ -264,10 +291,8 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
 
             let line = Line::from(spans);
 
-            if let Some(handle) = s.latest_iteration_lines_handle()
-                && let Ok(mut buffer_lines) = handle.lock()
-            {
-                buffer_lines.push(line);
+            if let Some(handle) = s.latest_iteration_lines_handle() {
+                acc.push_non_text(line, &handle);
             }
 
             s.last_event = Some("tool_call_start".to_string());
@@ -277,22 +302,27 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
         RpcEvent::ToolCallEnd {
             output, is_error, ..
         } => {
+            let display = format_tool_result(output);
+            if display.is_empty() {
+                s.last_event = Some("tool_call_end".to_string());
+                s.last_event_at = Some(Instant::now());
+                return;
+            }
+
             let (prefix, color) = if *is_error {
                 ("\u{2717} ", Color::Red)
             } else {
                 ("\u{2713} ", Color::DarkGray)
             };
 
-            let truncated = truncate(output, 200);
+            let truncated = truncate(&display, 200);
             let line = Line::from(Span::styled(
                 format!(" {}{}", prefix, truncated),
                 Style::default().fg(color),
             ));
 
-            if let Some(handle) = s.latest_iteration_lines_handle()
-                && let Ok(mut buffer_lines) = handle.lock()
-            {
-                buffer_lines.push(line);
+            if let Some(handle) = s.latest_iteration_lines_handle() {
+                acc.push_non_text(line, &handle);
             }
 
             s.last_event = Some("tool_call_end".to_string());
@@ -300,9 +330,6 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
         }
 
         RpcEvent::Error { code, message, .. } => {
-            // Freeze accumulated text before adding the error line
-            freeze_rpc_text(&mut s);
-
             append_error_line(&mut s, code, message);
 
             s.last_event = Some("error".to_string());
@@ -386,21 +413,28 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
 
 /// Extracts the most relevant field from tool input for display.
 fn format_tool_summary(name: &str, input: &Value) -> Option<String> {
+    // Try the primary key for the tool name first, then common fallbacks.
+    // ACP tools use lowercase names (read, write, shell, ls, glob, grep)
+    // while Claude uses PascalCase (Read, Write, Bash, Glob, Grep).
     match name {
-        "Read" | "Edit" | "Write" => input
+        "Read" | "Edit" | "Write" | "read" | "write" => input
             .get("path")
             .or_else(|| input.get("file_path"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        "Bash" => {
+        "Bash" | "shell" => {
             let cmd = input.get("command")?.as_str()?;
             Some(truncate(cmd, 60))
         }
-        "Grep" => input.get("pattern")?.as_str().map(|s| s.to_string()),
-        "Glob" => input.get("pattern")?.as_str().map(|s| s.to_string()),
+        "Grep" | "grep" => input.get("pattern")?.as_str().map(|s| s.to_string()),
+        "Glob" | "glob" | "ls" => input
+            .get("pattern")
+            .or_else(|| input.get("path"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         "Task" => input.get("description")?.as_str().map(|s| s.to_string()),
-        "WebFetch" => input.get("url")?.as_str().map(|s| s.to_string()),
-        "WebSearch" => input.get("query")?.as_str().map(|s| s.to_string()),
+        "WebFetch" | "web_fetch" => input.get("url")?.as_str().map(|s| s.to_string()),
+        "WebSearch" | "web_search" => input.get("query")?.as_str().map(|s| s.to_string()),
         "LSP" => {
             let op = input.get("operation")?.as_str()?;
             let file = input.get("filePath")?.as_str()?;
@@ -408,8 +442,89 @@ fn format_tool_summary(name: &str, input: &Value) -> Option<String> {
         }
         "NotebookEdit" => input.get("notebook_path")?.as_str().map(|s| s.to_string()),
         "TodoWrite" => Some("updating todo list".to_string()),
-        _ => None,
+        _ => {
+            // Generic fallback: try common keys
+            input
+                .get("path")
+                .or_else(|| input.get("file_path"))
+                .or_else(|| input.get("command"))
+                .or_else(|| input.get("pattern"))
+                .or_else(|| input.get("url"))
+                .or_else(|| input.get("query"))
+                .and_then(|v| v.as_str())
+                .map(|s| truncate(s, 60))
+        }
     }
+}
+
+/// Extracts human-readable content from ACP tool result JSON envelopes.
+///
+/// ACP tool results arrive as `{"items":[{"Text":"..."} | {"Json":{...}}]}`.
+fn format_tool_result(output: &str) -> String {
+    let Ok(val) = serde_json::from_str::<Value>(output) else {
+        return output.to_string();
+    };
+    let Some(items) = val.get("items").and_then(|v| v.as_array()) else {
+        return output.to_string();
+    };
+    let Some(item) = items.first() else {
+        return String::new();
+    };
+
+    if let Some(text) = item.get("Text").and_then(|v| v.as_str()) {
+        return text.to_string();
+    }
+
+    if let Some(json) = item.get("Json") {
+        // Shell: {exit_status, stdout, stderr}
+        if let Some(stdout) = json.get("stdout").and_then(|v| v.as_str()) {
+            let stderr = json.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
+            let exit = json
+                .get("exit_status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let failed = !exit.contains("status: 0");
+            return if failed && !stderr.is_empty() {
+                stderr.to_string()
+            } else if !stdout.is_empty() {
+                stdout.to_string()
+            } else {
+                stderr.to_string()
+            };
+        }
+        // Glob/ls: {filePaths, totalFiles}
+        if let Some(paths) = json.get("filePaths").and_then(|v| v.as_array()) {
+            let total = json
+                .get("totalFiles")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(paths.len() as u64);
+            let names: Vec<&str> = paths
+                .iter()
+                .filter_map(|p| p.as_str())
+                .map(|p| p.rsplit('/').next().unwrap_or(p))
+                .collect();
+            return format!("{} files: {}", total, names.join(", "));
+        }
+        // Grep: {numFiles, numMatches, results}
+        if let Some(results) = json.get("results").and_then(|v| v.as_array()) {
+            let num_matches = json.get("numMatches").and_then(|v| v.as_u64()).unwrap_or(0);
+            let first_match = results.first().and_then(|r| {
+                let file = r.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                let basename = file.rsplit('/').next().unwrap_or(file);
+                let matches = r.get("matches").and_then(|v| v.as_array())?;
+                let first = matches.first().and_then(|m| m.as_str())?;
+                Some(format!("{}: {}", basename, first.trim()))
+            });
+            return match first_match {
+                Some(m) => format!("{} matches: {}", num_matches, m),
+                None => format!("{} matches", num_matches),
+            };
+        }
+
+        return json.to_string();
+    }
+
+    output.to_string()
 }
 
 #[cfg(test)]
@@ -422,9 +537,14 @@ mod tests {
         Arc::new(Mutex::new(TuiState::new()))
     }
 
+    fn make_acc() -> TextAccumulator {
+        TextAccumulator::new()
+    }
+
     #[test]
     fn test_loop_started_sets_timer() {
         let state = make_state();
+        let mut acc = make_acc();
         {
             let mut s = state.lock().unwrap();
             s.loop_started = None;
@@ -436,7 +556,7 @@ mod tests {
             backend: "claude".to_string(),
             started_at: 0,
         };
-        apply_rpc_event(&event, &state);
+        apply_rpc_event(&event, &state, &mut acc);
 
         let s = state.lock().unwrap();
         assert!(s.loop_started.is_some());
@@ -446,6 +566,7 @@ mod tests {
     #[test]
     fn test_iteration_start_creates_buffer() {
         let state = make_state();
+        let mut acc = make_acc();
 
         let event = RpcEvent::IterationStart {
             iteration: 1,
@@ -455,7 +576,7 @@ mod tests {
             backend: "claude".to_string(),
             started_at: 0,
         };
-        apply_rpc_event(&event, &state);
+        apply_rpc_event(&event, &state, &mut acc);
 
         let s = state.lock().unwrap();
         assert_eq!(s.total_iterations(), 1);
@@ -465,6 +586,7 @@ mod tests {
     #[test]
     fn test_text_delta_appends_content() {
         let state = make_state();
+        let mut acc = make_acc();
 
         // Start an iteration first
         let start_event = RpcEvent::IterationStart {
@@ -475,14 +597,14 @@ mod tests {
             backend: "claude".to_string(),
             started_at: 0,
         };
-        apply_rpc_event(&start_event, &state);
+        apply_rpc_event(&start_event, &state, &mut acc);
 
         // Now add text
         let text_event = RpcEvent::TextDelta {
             iteration: 1,
             delta: "Hello world".to_string(),
         };
-        apply_rpc_event(&text_event, &state);
+        apply_rpc_event(&text_event, &state, &mut acc);
 
         let s = state.lock().unwrap();
         let lines = s.iterations[0].lines.lock().unwrap();
@@ -492,6 +614,7 @@ mod tests {
     #[test]
     fn test_tool_call_start_adds_header() {
         let state = make_state();
+        let mut acc = make_acc();
 
         // Start an iteration first
         let start_event = RpcEvent::IterationStart {
@@ -502,7 +625,7 @@ mod tests {
             backend: "claude".to_string(),
             started_at: 0,
         };
-        apply_rpc_event(&start_event, &state);
+        apply_rpc_event(&start_event, &state, &mut acc);
 
         let tool_event = RpcEvent::ToolCallStart {
             iteration: 1,
@@ -510,7 +633,7 @@ mod tests {
             tool_call_id: "tool_1".to_string(),
             input: json!({"command": "ls -la"}),
         };
-        apply_rpc_event(&tool_event, &state);
+        apply_rpc_event(&tool_event, &state, &mut acc);
 
         let s = state.lock().unwrap();
         let lines = s.iterations[0].lines.lock().unwrap();
@@ -520,6 +643,7 @@ mod tests {
     #[test]
     fn test_loop_terminated_marks_complete() {
         let state = make_state();
+        let mut acc = make_acc();
 
         let event = RpcEvent::LoopTerminated {
             reason: TerminationReason::Completed,
@@ -528,7 +652,7 @@ mod tests {
             total_cost_usd: 0.25,
             terminated_at: 0,
         };
-        apply_rpc_event(&event, &state);
+        apply_rpc_event(&event, &state, &mut acc);
 
         let s = state.lock().unwrap();
         assert!(s.loop_completed);
@@ -538,6 +662,7 @@ mod tests {
     #[test]
     fn test_task_counts_updated() {
         let state = make_state();
+        let mut acc = make_acc();
 
         let event = RpcEvent::TaskCountsUpdated {
             total: 10,
@@ -545,7 +670,7 @@ mod tests {
             closed: 7,
             ready: 2,
         };
-        apply_rpc_event(&event, &state);
+        apply_rpc_event(&event, &state, &mut acc);
 
         let s = state.lock().unwrap();
         assert_eq!(s.task_counts.total, 10);
@@ -560,6 +685,7 @@ mod tests {
         // chars each) without newlines. The TUI should render these as flowing
         // paragraph text, NOT one line per delta.
         let state = make_state();
+        let mut acc = make_acc();
 
         // Start an iteration
         apply_rpc_event(
@@ -572,6 +698,7 @@ mod tests {
                 started_at: 0,
             },
             &state,
+            &mut acc,
         );
 
         // Send 8 small text deltas (typical Pi streaming pattern)
@@ -592,6 +719,7 @@ mod tests {
                     delta: delta.to_string(),
                 },
                 &state,
+                &mut acc,
             );
         }
 
@@ -623,6 +751,7 @@ mod tests {
         // When text deltas are followed by a tool call, the accumulated text
         // should be frozen and appear before the tool call line.
         let state = make_state();
+        let mut acc = make_acc();
 
         apply_rpc_event(
             &RpcEvent::IterationStart {
@@ -634,6 +763,7 @@ mod tests {
                 started_at: 0,
             },
             &state,
+            &mut acc,
         );
 
         // Send streaming text, then a tool call, then more text
@@ -644,6 +774,7 @@ mod tests {
                     delta: delta.to_string(),
                 },
                 &state,
+                &mut acc,
             );
         }
 
@@ -655,6 +786,7 @@ mod tests {
                 input: json!({"file_path": "src/main.rs"}),
             },
             &state,
+            &mut acc,
         );
 
         for delta in ["Now ", "checking."] {
@@ -664,6 +796,7 @@ mod tests {
                     delta: delta.to_string(),
                 },
                 &state,
+                &mut acc,
             );
         }
 
@@ -721,6 +854,24 @@ mod tests {
             Some("ls".to_string())
         );
         assert_eq!(format_tool_summary("Unknown", &json!({})), None);
+
+        // ACP tool names (lowercase)
+        assert_eq!(
+            format_tool_summary("read", &json!({"path": "/foo/bar.rs"})),
+            Some("/foo/bar.rs".to_string())
+        );
+        assert_eq!(
+            format_tool_summary("shell", &json!({"command": "cargo test"})),
+            Some("cargo test".to_string())
+        );
+        assert_eq!(
+            format_tool_summary("ls", &json!({"path": "/src"})),
+            Some("/src".to_string())
+        );
+        assert_eq!(
+            format_tool_summary("grep", &json!({"pattern": "TODO"})),
+            Some("TODO".to_string())
+        );
     }
 
     #[test]

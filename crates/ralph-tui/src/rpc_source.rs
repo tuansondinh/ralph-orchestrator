@@ -46,6 +46,7 @@ pub async fn run_rpc_event_reader<R>(
     R: AsyncRead + Unpin,
 {
     let mut lines = BufReader::new(reader).lines();
+    let mut received_any_event = false;
 
     loop {
         tokio::select! {
@@ -70,6 +71,7 @@ pub async fn run_rpc_event_reader<R>(
 
                         match serde_json::from_str::<RpcEvent>(line) {
                             Ok(event) => {
+                                received_any_event = true;
                                 apply_rpc_event(&event, &state);
                             }
                             Err(e) => {
@@ -80,8 +82,37 @@ pub async fn run_rpc_event_reader<R>(
                     Ok(None) => {
                         // EOF - subprocess exited
                         debug!("RPC event reader reached EOF");
-                        // Mark loop as completed
                         if let Ok(mut s) = state.lock() {
+                            if !received_any_event {
+                                // Subprocess died before sending any events (e.g., worktree
+                                // creation failure, config error, lock conflict).
+                                warn!("Subprocess exited without sending any RPC events");
+                                s.subprocess_error = Some(
+                                    "Subprocess exited before starting. Check .ralph/diagnostics/logs/ for details.".to_string()
+                                );
+                                // Create an error iteration so the content pane shows the message
+                                s.start_new_iteration();
+                                if let Some(handle) = s.latest_iteration_lines_handle()
+                                    && let Ok(mut lines) = handle.lock()
+                                {
+                                    lines.push(Line::from(vec![
+                                        Span::styled(
+                                            "\u{26A0} ",
+                                            ratatui::style::Style::default()
+                                                .fg(ratatui::style::Color::Red)
+                                                .add_modifier(ratatui::style::Modifier::BOLD),
+                                        ),
+                                        Span::raw("Subprocess exited before starting the orchestration loop."),
+                                    ]));
+                                    lines.push(Line::raw(""));
+                                    lines.push(Line::raw("Possible causes:"));
+                                    lines.push(Line::raw("  - Loop lock held by another process (stale .ralph/loop.lock)"));
+                                    lines.push(Line::raw("  - Worktree creation failed (branch name collision)"));
+                                    lines.push(Line::raw("  - Configuration error in hat/config files"));
+                                    lines.push(Line::raw(""));
+                                    lines.push(Line::raw("Check logs: .ralph/diagnostics/logs/"));
+                                }
+                            }
                             s.loop_completed = true;
                             s.finish_latest_iteration();
                         }
@@ -95,6 +126,36 @@ pub async fn run_rpc_event_reader<R>(
             }
         }
     }
+}
+
+/// Freezes the current RPC text buffer into the iteration's lines.
+///
+/// When streaming text deltas arrive, they accumulate in `rpc_text_buffer` and
+/// their rendered lines are kept as "unfrozen" (replaceable) at the end of the
+/// iteration buffer. This function converts that text into permanent lines,
+/// clearing the accumulator so that subsequent non-text events (tool calls,
+/// errors) appear after the frozen text.
+fn freeze_rpc_text(s: &mut TuiState) {
+    if s.rpc_text_buffer.is_empty() {
+        return;
+    }
+
+    // The last `rpc_text_line_count` lines in the buffer are unfrozen text.
+    // They were produced from previous renders of the accumulating buffer.
+    // Now we do one final render and replace them.
+    let final_lines = text_to_lines(&s.rpc_text_buffer);
+    if let Some(handle) = s.latest_iteration_lines_handle()
+        && let Ok(mut buffer_lines) = handle.lock()
+    {
+        // Remove the previous unfrozen text lines
+        let keep = buffer_lines.len().saturating_sub(s.rpc_text_line_count);
+        buffer_lines.truncate(keep);
+        // Append the final render
+        buffer_lines.extend(final_lines);
+    }
+
+    s.rpc_text_buffer.clear();
+    s.rpc_text_line_count = 0;
 }
 
 /// Applies an RPC event to the TUI state.
@@ -125,6 +186,7 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
             s.pending_backend = Some(backend.clone());
 
             // Start a new iteration buffer with metadata
+            // (this also resets the rpc text accumulation buffer)
             s.start_new_iteration_with_metadata(Some(hat_display.clone()), Some(backend.clone()));
 
             // Update iteration counter
@@ -140,6 +202,9 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
             loop_complete_triggered,
             ..
         } => {
+            // Freeze any accumulated text before ending the iteration
+            freeze_rpc_text(&mut s);
+
             s.prev_iteration = s.iteration;
             s.finish_latest_iteration();
 
@@ -153,13 +218,25 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
         }
 
         RpcEvent::TextDelta { delta, .. } => {
-            // Parse markdown text and append to latest iteration buffer
-            let lines = text_to_lines(delta);
+            // Accumulate text in the buffer rather than rendering each delta
+            // independently. This produces flowing paragraphs instead of
+            // one-delta-per-line garbled output.
+            s.rpc_text_buffer.push_str(delta);
+
+            // Re-render the full accumulated text to lines
+            let new_lines = text_to_lines(&s.rpc_text_buffer);
+            let new_line_count = new_lines.len();
+
             if let Some(handle) = s.latest_iteration_lines_handle()
                 && let Ok(mut buffer_lines) = handle.lock()
             {
-                buffer_lines.extend(lines);
+                // Remove the previous unfrozen text lines (from the last render)
+                let keep = buffer_lines.len().saturating_sub(s.rpc_text_line_count);
+                buffer_lines.truncate(keep);
+                // Append the fresh render of the full accumulated text
+                buffer_lines.extend(new_lines);
             }
+            s.rpc_text_line_count = new_line_count;
 
             s.last_event = Some("text_delta".to_string());
             s.last_event_at = Some(Instant::now());
@@ -168,6 +245,9 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
         RpcEvent::ToolCallStart {
             tool_name, input, ..
         } => {
+            // Freeze accumulated text before adding the tool call line
+            freeze_rpc_text(&mut s);
+
             // Format tool call header
             let mut spans = vec![Span::styled(
                 format!("\u{2699} [{}]", tool_name),
@@ -220,6 +300,9 @@ fn apply_rpc_event(event: &RpcEvent, state: &Arc<Mutex<TuiState>>) {
         }
 
         RpcEvent::Error { code, message, .. } => {
+            // Freeze accumulated text before adding the error line
+            freeze_rpc_text(&mut s);
+
             append_error_line(&mut s, code, message);
 
             s.last_event = Some("error".to_string());
@@ -472,6 +555,156 @@ mod tests {
     }
 
     #[test]
+    fn test_small_text_deltas_form_flowing_paragraph_not_one_per_line() {
+        // Simulates Pi's text_delta streaming pattern: many small deltas (5-50
+        // chars each) without newlines. The TUI should render these as flowing
+        // paragraph text, NOT one line per delta.
+        let state = make_state();
+
+        // Start an iteration
+        apply_rpc_event(
+            &RpcEvent::IterationStart {
+                iteration: 1,
+                max_iterations: None,
+                hat: "scoper".to_string(),
+                hat_display: "🔎 Scoper".to_string(),
+                backend: "pi".to_string(),
+                started_at: 0,
+            },
+            &state,
+        );
+
+        // Send 8 small text deltas (typical Pi streaming pattern)
+        let deltas = vec![
+            "Rust",
+            " is a systems",
+            " programming language",
+            " that runs",
+            " blazingly fast,",
+            " prevents segfaults,",
+            " and guarantees",
+            " thread safety.",
+        ];
+        for delta in deltas {
+            apply_rpc_event(
+                &RpcEvent::TextDelta {
+                    iteration: 1,
+                    delta: delta.to_string(),
+                },
+                &state,
+            );
+        }
+
+        let s = state.lock().unwrap();
+        let lines = s.iterations[0].lines.lock().unwrap();
+
+        // With 8 small deltas forming ~120 chars of text (no newlines), the
+        // result should be a flowing paragraph (1-3 lines when wrapped at
+        // typical terminal width), NOT 8 separate lines.
+        assert!(
+            lines.len() <= 3,
+            "Small text deltas without newlines should form a flowing paragraph, \
+             not one line per delta. Expected <= 3 lines but got {} lines: {:?}",
+            lines.len(),
+            lines.iter().map(|l| l.to_string()).collect::<Vec<_>>()
+        );
+
+        // Verify the full text is present and contiguous
+        let full_text: String = lines.iter().map(|l| l.to_string()).collect();
+        assert!(
+            full_text.contains("Rust is a systems programming language"),
+            "Text should flow as a paragraph. Got: {:?}",
+            full_text
+        );
+    }
+
+    #[test]
+    fn test_text_deltas_frozen_by_tool_call_preserve_order() {
+        // When text deltas are followed by a tool call, the accumulated text
+        // should be frozen and appear before the tool call line.
+        let state = make_state();
+
+        apply_rpc_event(
+            &RpcEvent::IterationStart {
+                iteration: 1,
+                max_iterations: None,
+                hat: "builder".to_string(),
+                hat_display: "🔨 Builder".to_string(),
+                backend: "pi".to_string(),
+                started_at: 0,
+            },
+            &state,
+        );
+
+        // Send streaming text, then a tool call, then more text
+        for delta in ["I'll ", "review ", "the code."] {
+            apply_rpc_event(
+                &RpcEvent::TextDelta {
+                    iteration: 1,
+                    delta: delta.to_string(),
+                },
+                &state,
+            );
+        }
+
+        apply_rpc_event(
+            &RpcEvent::ToolCallStart {
+                iteration: 1,
+                tool_name: "Read".to_string(),
+                tool_call_id: "t1".to_string(),
+                input: json!({"file_path": "src/main.rs"}),
+            },
+            &state,
+        );
+
+        for delta in ["Now ", "checking."] {
+            apply_rpc_event(
+                &RpcEvent::TextDelta {
+                    iteration: 1,
+                    delta: delta.to_string(),
+                },
+                &state,
+            );
+        }
+
+        let s = state.lock().unwrap();
+        let lines = s.iterations[0].lines.lock().unwrap();
+        let line_strs: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+
+        // Find positions: text1 should be before tool, text2 after tool
+        let text1_idx = line_strs.iter().position(|l| l.contains("review the code"));
+        let tool_idx = line_strs.iter().position(|l| l.contains("Read"));
+        let text2_idx = line_strs.iter().position(|l| l.contains("checking"));
+
+        assert!(
+            text1_idx.is_some(),
+            "text1 should be present: {:?}",
+            line_strs
+        );
+        assert!(
+            tool_idx.is_some(),
+            "tool should be present: {:?}",
+            line_strs
+        );
+        assert!(
+            text2_idx.is_some(),
+            "text2 should be present: {:?}",
+            line_strs
+        );
+
+        assert!(
+            text1_idx.unwrap() < tool_idx.unwrap(),
+            "text1 should come before tool: {:?}",
+            line_strs
+        );
+        assert!(
+            tool_idx.unwrap() < text2_idx.unwrap(),
+            "tool should come before text2: {:?}",
+            line_strs
+        );
+    }
+
+    #[test]
     fn test_format_tool_summary() {
         // Primary key: "path" (Claude Code convention)
         assert_eq!(
@@ -495,5 +728,77 @@ mod tests {
         use crate::text_renderer::truncate;
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("hello world", 5), "hello...");
+    }
+
+    // =========================================================================
+    // Subprocess Death Detection Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_eof_without_events_sets_subprocess_error() {
+        // Given a reader that immediately returns EOF (simulating subprocess death)
+        let empty_input: &[u8] = b"";
+        let state = make_state();
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+        // When the event reader runs to completion
+        run_rpc_event_reader(empty_input, state.clone(), cancel_rx).await;
+
+        // Then subprocess_error should be set (subprocess died before sending events)
+        let s = state.lock().unwrap();
+        assert!(
+            s.subprocess_error.is_some(),
+            "should set subprocess_error on EOF without events"
+        );
+        assert!(s.loop_completed, "should mark loop as completed");
+    }
+
+    #[tokio::test]
+    async fn test_eof_without_events_creates_error_iteration() {
+        // Given a reader that immediately returns EOF
+        let empty_input: &[u8] = b"";
+        let state = make_state();
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+        // When the event reader runs to completion
+        run_rpc_event_reader(empty_input, state.clone(), cancel_rx).await;
+
+        // Then an error iteration should be created so the content pane has something to show
+        let s = state.lock().unwrap();
+        assert_eq!(s.total_iterations(), 1, "should create one error iteration");
+        let lines = s.iterations[0].lines.lock().unwrap();
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(
+            text.contains("Subprocess exited"),
+            "error iteration should contain error message, got: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_eof_after_loop_started_does_not_set_subprocess_error() {
+        // Given a reader with a valid LoopStarted event then EOF
+        let event = RpcEvent::LoopStarted {
+            prompt: "test".to_string(),
+            max_iterations: Some(10),
+            backend: "claude".to_string(),
+            started_at: 0,
+        };
+        let line = format!("{}\n", serde_json::to_string(&event).unwrap());
+        let state = make_state();
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+        // When the event reader processes the event and then hits EOF
+        run_rpc_event_reader(line.as_bytes(), state.clone(), cancel_rx).await;
+
+        // Then subprocess_error should NOT be set (subprocess ran normally)
+        let s = state.lock().unwrap();
+        assert!(
+            s.subprocess_error.is_none(),
+            "should NOT set subprocess_error when events were received"
+        );
     }
 }

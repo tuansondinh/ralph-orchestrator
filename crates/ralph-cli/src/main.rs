@@ -1016,12 +1016,15 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Some(Commands::Hooks(args)) => hooks::execute(
-            &config_sources,
-            hats_source.as_ref(),
-            args,
-            cli.color.should_use_colors(),
-        ),
+        Some(Commands::Hooks(args)) => {
+            hooks::execute(
+                &config_sources,
+                hats_source.as_ref(),
+                args,
+                cli.color.should_use_colors(),
+            )
+            .await
+        }
         Some(Commands::Doctor(args)) => {
             doctor::execute(
                 &config_sources,

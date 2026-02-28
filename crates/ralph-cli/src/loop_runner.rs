@@ -1669,6 +1669,14 @@ fn build_iteration_start_payload_input(
 
 const RETRY_BACKOFF_DELAYS_MS: [u64; 3] = [100, 200, 400];
 const RETRY_BACKOFF_SIGNAL_POLL_INTERVAL_MS: u64 = 100;
+const SUSPEND_WAIT_SIGNAL_POLL_INTERVAL_MS: u64 = 250;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuspendWaitOutcome {
+    Resume,
+    Stop,
+    Restart,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HookDispatchOutcome {
@@ -1776,7 +1784,7 @@ fn dispatch_hook_with_suspend_policy(
     suspend_mode: HookSuspendMode,
     request: &HookRunRequest,
 ) -> HookDispatchOutcome {
-    let mut outcome = execute_hook_attempt(
+    let outcome = execute_hook_attempt(
         event_loop,
         hook_executor,
         loop_id,
@@ -1788,12 +1796,52 @@ fn dispatch_hook_with_suspend_policy(
         request,
     );
 
-    if outcome.disposition != HookDisposition::Suspend
-        || suspend_mode != HookSuspendMode::RetryBackoff
-    {
+    if outcome.disposition != HookDisposition::Suspend {
         return outcome;
     }
 
+    match suspend_mode {
+        HookSuspendMode::WaitForResume => outcome,
+        HookSuspendMode::RetryBackoff => dispatch_retry_backoff_suspend_policy(
+            event_loop,
+            hook_executor,
+            loop_id,
+            phase_event_key,
+            phase_event,
+            hook_name,
+            on_error,
+            suspend_mode,
+            request,
+            outcome,
+        ),
+        HookSuspendMode::WaitThenRetry => dispatch_wait_then_retry_suspend_policy(
+            event_loop,
+            hook_executor,
+            loop_id,
+            phase_event_key,
+            phase_event,
+            hook_name,
+            on_error,
+            suspend_mode,
+            request,
+            outcome,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_retry_backoff_suspend_policy(
+    event_loop: &EventLoop,
+    hook_executor: &HookExecutor,
+    loop_id: &str,
+    phase_event_key: &str,
+    phase_event: HookPhaseEvent,
+    hook_name: &str,
+    on_error: HookOnError,
+    suspend_mode: HookSuspendMode,
+    request: &HookRunRequest,
+    mut outcome: HookDispatchOutcome,
+) -> HookDispatchOutcome {
     for (retry_attempt, backoff_delay_ms) in RETRY_BACKOFF_DELAYS_MS.iter().copied().enumerate() {
         match wait_for_retry_backoff_delay_with_signal_poll(
             request.workspace_root.as_path(),
@@ -1855,6 +1903,112 @@ fn dispatch_hook_with_suspend_policy(
     );
 
     outcome
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_wait_then_retry_suspend_policy(
+    event_loop: &EventLoop,
+    hook_executor: &HookExecutor,
+    loop_id: &str,
+    phase_event_key: &str,
+    phase_event: HookPhaseEvent,
+    hook_name: &str,
+    on_error: HookOnError,
+    suspend_mode: HookSuspendMode,
+    request: &HookRunRequest,
+    outcome: HookDispatchOutcome,
+) -> HookDispatchOutcome {
+    let suspend_state_store = SuspendStateStore::new(&request.workspace_root);
+    let reason = format_suspending_hook_reason(&outcome);
+    let suspend_state = SuspendStateRecord::new(
+        loop_id,
+        phase_event,
+        hook_name,
+        reason,
+        suspend_mode,
+        chrono::Utc::now(),
+    );
+
+    if let Err(error) = suspend_state_store.write_suspend_state(&suspend_state) {
+        warn!(
+            phase_event = %phase_event_key,
+            hook_name = %hook_name,
+            error = %error,
+            "Failed to persist suspend-state for wait_then_retry; deferring to standard suspend handling"
+        );
+        return outcome;
+    }
+
+    warn!(
+        phase_event = %phase_event_key,
+        hook_name = %hook_name,
+        "Lifecycle hook requested suspend(wait_then_retry); entering wait-for-resume gate before single retry"
+    );
+
+    let wait_outcome = match wait_for_suspend_signal_with_poll(&suspend_state_store) {
+        Ok(wait_outcome) => wait_outcome,
+        Err(error) => {
+            warn!(
+                phase_event = %phase_event_key,
+                hook_name = %hook_name,
+                error = %error,
+                "wait_then_retry gate failed while polling suspend signals; deferring to standard suspend handling"
+            );
+            return outcome;
+        }
+    };
+
+    match wait_outcome {
+        SuspendWaitOutcome::Stop => {
+            info!(
+                phase_event = %phase_event_key,
+                hook_name = %hook_name,
+                "Stop requested while waiting under wait_then_retry; deferring to suspend termination handling"
+            );
+            outcome
+        }
+        SuspendWaitOutcome::Restart => {
+            info!(
+                phase_event = %phase_event_key,
+                hook_name = %hook_name,
+                "Restart requested while waiting under wait_then_retry; deferring to suspend termination handling"
+            );
+            outcome
+        }
+        SuspendWaitOutcome::Resume => {
+            if let Err(error) = suspend_state_store.clear_suspend_state() {
+                warn!(
+                    phase_event = %phase_event_key,
+                    hook_name = %hook_name,
+                    error = %error,
+                    "Failed to clear wait_then_retry suspend-state after resume; deferring to standard suspend handling"
+                );
+                return outcome;
+            }
+
+            let retry_outcome = execute_hook_attempt(
+                event_loop,
+                hook_executor,
+                loop_id,
+                phase_event_key,
+                phase_event,
+                hook_name,
+                on_error,
+                suspend_mode,
+                request,
+            );
+
+            if retry_outcome.disposition == HookDisposition::Pass {
+                info!(
+                    phase_event = %phase_event_key,
+                    hook_name = %hook_name,
+                    "Lifecycle hook recovered under wait_then_retry"
+                );
+            }
+
+            retry_outcome
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1966,6 +2120,31 @@ fn wait_for_retry_backoff_delay_with_signal_poll(
     }
 }
 
+fn wait_for_suspend_signal_with_poll(
+    suspend_state_store: &SuspendStateStore,
+) -> Result<SuspendWaitOutcome> {
+    let poll_interval = Duration::from_millis(SUSPEND_WAIT_SIGNAL_POLL_INTERVAL_MS);
+
+    loop {
+        if is_stop_requested(suspend_state_store.workspace_root()) {
+            return Ok(SuspendWaitOutcome::Stop);
+        }
+
+        if is_restart_requested(suspend_state_store.workspace_root()) {
+            return Ok(SuspendWaitOutcome::Restart);
+        }
+
+        if suspend_state_store
+            .consume_resume_requested()
+            .context("Failed to consume resume signal while suspended")?
+        {
+            return Ok(SuspendWaitOutcome::Resume);
+        }
+
+        std::thread::sleep(poll_interval);
+    }
+}
+
 fn fail_if_blocking_loop_start_outcomes(outcomes: &[HookDispatchOutcome]) -> Result<()> {
     let Some(blocking_outcome) = outcomes
         .iter()
@@ -2009,8 +2188,6 @@ async fn wait_for_resume_if_suspended(
     loop_id: &str,
     suspend_state_store: &SuspendStateStore,
 ) -> Result<Option<TerminationReason>> {
-    const POLL_INTERVAL_MS: u64 = 250;
-
     let Some(suspending_outcome) = outcomes
         .iter()
         .find(|outcome| outcome.disposition == HookDisposition::Suspend)
@@ -2083,7 +2260,7 @@ async fn wait_for_resume_if_suspended(
             return Ok(None);
         }
 
-        tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+        tokio::time::sleep(Duration::from_millis(SUSPEND_WAIT_SIGNAL_POLL_INTERVAL_MS)).await;
     }
 }
 
@@ -3914,6 +4091,284 @@ exit 61"#
 
         assert_eq!(wait_result, Some(TerminationReason::Stopped));
         assert!(!temp_dir.path().join(".ralph/stop-requested").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dispatch_phase_event_hooks_wait_then_retry_recovers_after_resume() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let attempts_path = temp_dir.path().join("wait-then-retry-attempts.txt");
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(
+            HookPhaseEvent::PreIterationStart,
+            vec![hook_spec_with_command_and_on_error_and_suspend_mode(
+                "wait-then-retry-pre-iteration-start",
+                vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    r#"attempts_file="$1"
+attempt=0
+if [ -f "$attempts_file" ]; then
+  attempt="$(cat "$attempts_file")"
+fi
+attempt=$((attempt + 1))
+printf '%s' "$attempt" > "$attempts_file"
+if [ "$attempt" -lt 2 ]; then
+  exit 71
+fi
+exit 0"#
+                        .to_string(),
+                    "wait-then-retry-hook".to_string(),
+                    attempts_path.to_string_lossy().into_owned(),
+                ],
+                HookOnError::Suspend,
+                Some(HookSuspendMode::WaitThenRetry),
+            )],
+        );
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+        let suspend_state_store = SuspendStateStore::new(temp_dir.path());
+
+        let resume_store = suspend_state_store.clone();
+        let resume_handle = std::thread::spawn(move || {
+            let wait_started_at = std::time::Instant::now();
+            while !resume_store.suspend_state_path().exists() {
+                assert!(
+                    wait_started_at.elapsed() < Duration::from_secs(2),
+                    "wait_then_retry should persist suspend-state before waiting"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            resume_store
+                .write_resume_requested()
+                .expect("write resume signal");
+        });
+
+        let outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreIterationStart,
+            build_iteration_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                1,
+                Some("planner".to_string()),
+                None,
+                None,
+            ),
+        );
+
+        resume_handle
+            .join()
+            .expect("resume helper thread should not panic");
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].disposition, HookDisposition::Pass);
+        assert_eq!(outcomes[0].suspend_mode, HookSuspendMode::WaitThenRetry);
+        assert_eq!(outcomes[0].failure, None);
+
+        let attempts = std::fs::read_to_string(&attempts_path).expect("read attempts");
+        assert_eq!(
+            attempts.trim(),
+            "2",
+            "wait_then_retry should run exactly one retry after resume"
+        );
+        assert!(
+            suspend_state_store
+                .read_suspend_state()
+                .expect("read suspend-state after wait_then_retry")
+                .is_none(),
+            "suspend-state should be cleared after wait_then_retry resume"
+        );
+        assert!(
+            !suspend_state_store.resume_requested_path().exists(),
+            "resume signal should be consumed under wait_then_retry"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dispatch_phase_event_hooks_wait_then_retry_retry_failure_remains_suspended() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let attempts_path = temp_dir.path().join("wait-then-retry-attempts.txt");
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(
+            HookPhaseEvent::PostIterationStart,
+            vec![hook_spec_with_command_and_on_error_and_suspend_mode(
+                "wait-then-retry-post-iteration-start",
+                vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    r#"attempts_file="$1"
+attempt=0
+if [ -f "$attempts_file" ]; then
+  attempt="$(cat "$attempts_file")"
+fi
+attempt=$((attempt + 1))
+printf '%s' "$attempt" > "$attempts_file"
+exit 72"#
+                        .to_string(),
+                    "wait-then-retry-hook".to_string(),
+                    attempts_path.to_string_lossy().into_owned(),
+                ],
+                HookOnError::Suspend,
+                Some(HookSuspendMode::WaitThenRetry),
+            )],
+        );
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+        let suspend_state_store = SuspendStateStore::new(temp_dir.path());
+
+        let resume_store = suspend_state_store.clone();
+        let resume_handle = std::thread::spawn(move || {
+            let wait_started_at = std::time::Instant::now();
+            while !resume_store.suspend_state_path().exists() {
+                assert!(
+                    wait_started_at.elapsed() < Duration::from_secs(2),
+                    "wait_then_retry should persist suspend-state before waiting"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            resume_store
+                .write_resume_requested()
+                .expect("write resume signal");
+        });
+
+        let outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PostIterationStart,
+            build_iteration_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                1,
+                Some("planner".to_string()),
+                Some("builder".to_string()),
+                Some("task-123".to_string()),
+            ),
+        );
+
+        resume_handle
+            .join()
+            .expect("resume helper thread should not panic");
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].disposition, HookDisposition::Suspend);
+        assert_eq!(outcomes[0].suspend_mode, HookSuspendMode::WaitThenRetry);
+        assert_eq!(
+            outcomes[0].failure,
+            Some(HookDispatchFailure::HookRunFailed {
+                exit_code: Some(72),
+                timed_out: false,
+            })
+        );
+
+        let attempts = std::fs::read_to_string(&attempts_path).expect("read attempts");
+        assert_eq!(
+            attempts.trim(),
+            "2",
+            "wait_then_retry should run a single retry attempt after resume"
+        );
+        assert!(
+            suspend_state_store
+                .read_suspend_state()
+                .expect("read suspend-state after wait_then_retry")
+                .is_none(),
+            "first wait_then_retry suspend-state should be cleared after resume"
+        );
+        assert!(
+            !suspend_state_store.resume_requested_path().exists(),
+            "resume signal should be consumed after wait_then_retry"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dispatch_phase_event_hooks_wait_then_retry_prioritizes_stop_over_resume() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let attempts_path = temp_dir.path().join("wait-then-retry-attempts.txt");
+        std::fs::create_dir_all(temp_dir.path().join(".ralph")).expect("create .ralph");
+        std::fs::write(temp_dir.path().join(".ralph/stop-requested"), "")
+            .expect("write stop signal");
+        std::fs::write(temp_dir.path().join(".ralph/resume-requested"), "")
+            .expect("write resume signal");
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(
+            HookPhaseEvent::PreLoopStart,
+            vec![hook_spec_with_command_and_on_error_and_suspend_mode(
+                "wait-then-retry-pre-loop-start",
+                vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    r#"attempts_file="$1"
+attempt=0
+if [ -f "$attempts_file" ]; then
+  attempt="$(cat "$attempts_file")"
+fi
+attempt=$((attempt + 1))
+printf '%s' "$attempt" > "$attempts_file"
+exit 73"#
+                        .to_string(),
+                    "wait-then-retry-hook".to_string(),
+                    attempts_path.to_string_lossy().into_owned(),
+                ],
+                HookOnError::Suspend,
+                Some(HookSuspendMode::WaitThenRetry),
+            )],
+        );
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+        let suspend_state_store = SuspendStateStore::new(temp_dir.path());
+
+        let outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreLoopStart,
+            build_loop_start_payload_input("loop-test", &loop_ctx, 5, 1, Some("ralph".to_string())),
+        );
+
+        let attempts = std::fs::read_to_string(&attempts_path).expect("read attempts");
+        assert_eq!(
+            attempts.trim(),
+            "1",
+            "stop signal should prevent wait_then_retry from running the retry"
+        );
+
+        let wait_result = block_on_test_future(wait_for_resume_if_suspended(
+            &outcomes,
+            "loop-test",
+            &suspend_state_store,
+        ))
+        .expect("wait helper should succeed");
+
+        assert_eq!(wait_result, Some(TerminationReason::Stopped));
+        assert!(!temp_dir.path().join(".ralph/stop-requested").exists());
+        assert!(!suspend_state_store.resume_requested_path().exists());
     }
 
     #[test]

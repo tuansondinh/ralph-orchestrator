@@ -5,6 +5,7 @@
 
 mod agent_output;
 mod errors;
+mod hook_runs;
 mod log_rotation;
 mod orchestration;
 mod performance;
@@ -16,6 +17,7 @@ mod integration_tests;
 
 pub use agent_output::{AgentOutputContent, AgentOutputEntry, AgentOutputLogger};
 pub use errors::{DiagnosticError, ErrorLogger};
+pub use hook_runs::{HookDisposition, HookRunLogger, HookRunTelemetryEntry};
 pub use log_rotation::{create_log_file, rotate_logs};
 pub use orchestration::{OrchestrationEvent, OrchestrationLogger};
 pub use performance::{PerformanceLogger, PerformanceMetric};

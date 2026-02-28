@@ -3409,6 +3409,118 @@ printf '%s|%s\n' "$1" "$phase" >> "$2""#
         assert!(post_iteration_start_message.contains("hook exited with code 31"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_iteration_start_suspend_waits_for_resume_and_clears_artifacts_before_continuing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(
+            HookPhaseEvent::PreIterationStart,
+            vec![hook_spec_with_command_and_on_error(
+                "suspend-pre-iteration-start",
+                vec!["sh".to_string(), "-c".to_string(), "exit 41".to_string()],
+                HookOnError::Suspend,
+            )],
+        );
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+
+        let pre_iteration_start_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreIterationStart,
+            build_iteration_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                1,
+                Some("planner".to_string()),
+                None,
+                None,
+            ),
+        );
+
+        assert_eq!(pre_iteration_start_outcomes.len(), 1);
+        assert_eq!(
+            pre_iteration_start_outcomes[0].disposition,
+            HookDisposition::Suspend
+        );
+        assert_eq!(
+            pre_iteration_start_outcomes[0].failure,
+            Some(HookDispatchFailure::HookRunFailed {
+                exit_code: Some(41),
+                timed_out: false,
+            })
+        );
+        assert!(
+            fail_if_blocking_iteration_start_outcomes(&pre_iteration_start_outcomes).is_ok(),
+            "suspend disposition should not block iteration.start boundary"
+        );
+
+        let suspend_state_store = SuspendStateStore::new(temp_dir.path());
+
+        let wait_result = block_on_test_future(async {
+            let wait_outcomes = pre_iteration_start_outcomes.clone();
+            let wait_store = suspend_state_store.clone();
+            let wait_handle = tokio::spawn(async move {
+                wait_for_resume_if_suspended(&wait_outcomes, "loop-test", &wait_store).await
+            });
+
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if suspend_state_store.suspend_state_path().exists() {
+                        break;
+                    }
+
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("suspend-state should be written before resume");
+
+            let suspend_state = suspend_state_store
+                .read_suspend_state()
+                .expect("read suspend-state")
+                .expect("suspend-state should exist while waiting for resume");
+
+            assert_eq!(suspend_state.loop_id, "loop-test");
+            assert_eq!(suspend_state.phase_event, HookPhaseEvent::PreIterationStart);
+            assert_eq!(suspend_state.hook_name, "suspend-pre-iteration-start");
+            assert_eq!(suspend_state.suspend_mode, HookSuspendMode::WaitForResume);
+            assert!(!suspend_state_store.resume_requested_path().exists());
+
+            suspend_state_store
+                .write_resume_requested()
+                .expect("write resume signal");
+
+            tokio::time::timeout(Duration::from_secs(2), wait_handle)
+                .await
+                .expect("wait_for_resume helper should complete after resume signal")
+                .expect("wait_for_resume task should not panic")
+        })
+        .expect("wait helper should succeed");
+
+        assert_eq!(wait_result, None);
+        assert!(
+            suspend_state_store
+                .read_suspend_state()
+                .expect("read suspend-state after resume")
+                .is_none(),
+            "suspend-state should be cleared after resume"
+        );
+        assert!(
+            !suspend_state_store.resume_requested_path().exists(),
+            "resume-requested should be consumed after resume"
+        );
+    }
+
     #[test]
     fn test_fail_if_blocking_loop_start_outcomes_allows_non_blocking_dispositions() {
         let outcomes = vec![

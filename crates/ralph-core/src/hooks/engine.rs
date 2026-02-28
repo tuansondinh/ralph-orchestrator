@@ -2,8 +2,14 @@ use crate::config::{
     HookDefaults, HookMutationConfig, HookOnError, HookPhaseEvent, HookSpec, HookSuspendMode,
     HooksConfig,
 };
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+const HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+const DEFAULT_ACTIVE_HAT: &str = "ralph";
 
 /// Resolves configured hooks for a lifecycle phase-event.
 #[derive(Debug, Clone)]
@@ -53,6 +59,81 @@ impl HookEngine {
             .map(|phase| self.resolve_phase_event(phase))
             .unwrap_or_default()
     }
+
+    /// Builds the lifecycle JSON payload sent to hook stdin.
+    #[must_use]
+    pub fn build_payload(
+        &self,
+        phase_event: HookPhaseEvent,
+        input: HookPayloadBuilderInput,
+    ) -> HookInvocationPayload {
+        self.build_payload_with_timestamp(phase_event, input, Utc::now())
+    }
+
+    /// Builds the lifecycle JSON payload sent to hook stdin with a fixed timestamp.
+    #[must_use]
+    pub fn build_payload_with_timestamp(
+        &self,
+        phase_event: HookPhaseEvent,
+        input: HookPayloadBuilderInput,
+        timestamp: DateTime<Utc>,
+    ) -> HookInvocationPayload {
+        let (phase, event) = split_phase_event(phase_event);
+        let HookPayloadBuilderInput {
+            loop_id,
+            is_primary,
+            workspace,
+            repo_root,
+            pid,
+            iteration_current,
+            iteration_max,
+            context,
+        } = input;
+
+        let HookPayloadContextInput {
+            active_hat,
+            selected_hat,
+            selected_task,
+            termination_reason,
+            human_interact,
+            metadata,
+        } = context;
+
+        HookInvocationPayload {
+            schema_version: HOOK_PAYLOAD_SCHEMA_VERSION,
+            phase: phase.to_string(),
+            event: event.to_string(),
+            phase_event: phase_event.as_str().to_string(),
+            timestamp,
+            loop_context: HookPayloadLoop {
+                id: loop_id,
+                is_primary,
+                workspace: workspace.to_string_lossy().into_owned(),
+                repo_root: repo_root.to_string_lossy().into_owned(),
+                pid,
+            },
+            iteration: HookPayloadIteration {
+                current: iteration_current,
+                max: iteration_max,
+            },
+            context: HookPayloadContext {
+                active_hat: active_hat.unwrap_or_else(|| DEFAULT_ACTIVE_HAT.to_string()),
+                selected_hat,
+                selected_task,
+                termination_reason,
+                human_interact,
+            },
+            metadata: HookPayloadMetadata {
+                accumulated: metadata,
+            },
+        }
+    }
+}
+
+fn split_phase_event(phase_event: HookPhaseEvent) -> (&'static str, &'static str) {
+    phase_event.as_str().split_once('.').expect(
+        "HookPhaseEvent canonical keys always contain a phase prefix and event suffix separated by '.'",
+    )
 }
 
 /// Hook spec with defaults materialized for runtime dispatch.
@@ -94,9 +175,84 @@ impl ResolvedHookSpec {
     }
 }
 
+/// Input contract for building hook invocation stdin payloads.
+#[derive(Debug, Clone)]
+pub struct HookPayloadBuilderInput {
+    pub loop_id: String,
+    pub is_primary: bool,
+    pub workspace: PathBuf,
+    pub repo_root: PathBuf,
+    pub pid: u32,
+    pub iteration_current: u32,
+    pub iteration_max: u32,
+    pub context: HookPayloadContextInput,
+}
+
+/// Mutable lifecycle context fields carried in hook stdin payloads.
+#[derive(Debug, Clone, Default)]
+pub struct HookPayloadContextInput {
+    pub active_hat: Option<String>,
+    pub selected_hat: Option<String>,
+    pub selected_task: Option<String>,
+    pub termination_reason: Option<String>,
+    pub human_interact: Option<Value>,
+    pub metadata: Map<String, Value>,
+}
+
+/// Structured lifecycle payload sent to hook stdin as JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookInvocationPayload {
+    pub schema_version: u32,
+    pub phase: String,
+    pub event: String,
+    pub phase_event: String,
+    pub timestamp: DateTime<Utc>,
+    #[serde(rename = "loop")]
+    pub loop_context: HookPayloadLoop,
+    pub iteration: HookPayloadIteration,
+    pub context: HookPayloadContext,
+    pub metadata: HookPayloadMetadata,
+}
+
+/// Loop metadata payload block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookPayloadLoop {
+    pub id: String,
+    pub is_primary: bool,
+    pub workspace: String,
+    pub repo_root: String,
+    pub pid: u32,
+}
+
+/// Iteration metadata payload block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookPayloadIteration {
+    pub current: u32,
+    pub max: u32,
+}
+
+/// Lifecycle context payload block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookPayloadContext {
+    pub active_hat: String,
+    pub selected_hat: Option<String>,
+    pub selected_task: Option<String>,
+    pub termination_reason: Option<String>,
+    pub human_interact: Option<Value>,
+}
+
+/// Mutable metadata payload block.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HookPayloadMetadata {
+    #[serde(default)]
+    pub accumulated: Map<String, Value>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+    use serde_json::json;
 
     fn hook_spec(name: &str) -> HookSpec {
         HookSpec {
@@ -123,6 +279,25 @@ mod tests {
             },
             events,
             extra: HashMap::new(),
+        }
+    }
+
+    fn fixed_time(hour: u32, minute: u32, second: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 2, 28, hour, minute, second)
+            .single()
+            .expect("fixed timestamp")
+    }
+
+    fn payload_input() -> HookPayloadBuilderInput {
+        HookPayloadBuilderInput {
+            loop_id: "loop-1234-abcd".to_string(),
+            is_primary: false,
+            workspace: PathBuf::from("/repo/.worktrees/loop-1234-abcd"),
+            repo_root: PathBuf::from("/repo"),
+            pid: 12345,
+            iteration_current: 7,
+            iteration_max: 100,
+            context: HookPayloadContextInput::default(),
         }
     }
 
@@ -198,5 +373,87 @@ mod tests {
 
         let unknown = engine.resolve_phase_event_str("post.nonexistent.event");
         assert!(unknown.is_empty());
+    }
+
+    #[test]
+    fn build_payload_maps_loop_iteration_and_context_fields() {
+        let engine = HookEngine::new(&hooks_config(HashMap::new()));
+        let mut input = payload_input();
+
+        let mut metadata = Map::new();
+        metadata.insert("risk_score".to_string(), json!(0.72));
+
+        input.context = HookPayloadContextInput {
+            active_hat: Some("ralph".to_string()),
+            selected_hat: Some("builder".to_string()),
+            selected_task: Some("task-1772314313-a244".to_string()),
+            termination_reason: None,
+            human_interact: Some(json!({"question": "Proceed?"})),
+            metadata,
+        };
+
+        let payload = engine.build_payload_with_timestamp(
+            HookPhaseEvent::PostIterationStart,
+            input,
+            fixed_time(21, 47, 0),
+        );
+
+        assert_eq!(payload.schema_version, HOOK_PAYLOAD_SCHEMA_VERSION);
+        assert_eq!(payload.phase, "post");
+        assert_eq!(payload.event, "iteration.start");
+        assert_eq!(payload.phase_event, "post.iteration.start");
+        assert_eq!(payload.loop_context.id, "loop-1234-abcd");
+        assert!(!payload.loop_context.is_primary);
+        assert_eq!(
+            payload.loop_context.workspace,
+            "/repo/.worktrees/loop-1234-abcd"
+        );
+        assert_eq!(payload.loop_context.repo_root, "/repo");
+        assert_eq!(payload.loop_context.pid, 12345);
+        assert_eq!(payload.iteration.current, 7);
+        assert_eq!(payload.iteration.max, 100);
+        assert_eq!(payload.context.active_hat, "ralph");
+        assert_eq!(payload.context.selected_hat.as_deref(), Some("builder"));
+        assert_eq!(
+            payload.context.selected_task.as_deref(),
+            Some("task-1772314313-a244")
+        );
+        assert_eq!(payload.metadata.accumulated["risk_score"], json!(0.72));
+
+        let value = serde_json::to_value(&payload).expect("serialize payload");
+        assert_eq!(value["loop"]["id"], "loop-1234-abcd");
+        assert_eq!(value["context"]["selected_hat"], "builder");
+        assert_eq!(value["context"]["selected_task"], "task-1772314313-a244");
+        assert_eq!(value["metadata"]["accumulated"]["risk_score"], json!(0.72));
+    }
+
+    #[test]
+    fn build_payload_defaults_optional_context_fields() {
+        let engine = HookEngine::new(&hooks_config(HashMap::new()));
+        let payload = engine.build_payload_with_timestamp(
+            HookPhaseEvent::PreLoopStart,
+            payload_input(),
+            fixed_time(21, 48, 0),
+        );
+
+        assert_eq!(payload.phase, "pre");
+        assert_eq!(payload.event, "loop.start");
+        assert_eq!(payload.phase_event, "pre.loop.start");
+        assert_eq!(payload.context.active_hat, DEFAULT_ACTIVE_HAT);
+        assert!(payload.context.selected_hat.is_none());
+        assert!(payload.context.selected_task.is_none());
+        assert!(payload.context.termination_reason.is_none());
+        assert!(payload.context.human_interact.is_none());
+        assert!(payload.metadata.accumulated.is_empty());
+
+        let value = serde_json::to_value(&payload).expect("serialize payload");
+        assert!(value["context"]["selected_hat"].is_null());
+        assert!(value["context"]["selected_task"].is_null());
+        assert!(
+            value["metadata"]["accumulated"]
+                .as_object()
+                .expect("accumulated metadata object")
+                .is_empty()
+        );
     }
 }

@@ -78,8 +78,10 @@ pub use hat_registry::HatRegistry;
 pub use hatless_ralph::{HatInfo, HatTopology, HatlessRalph};
 pub use hooks::{
     HookDefaults, HookEngine, HookExecutor, HookExecutorContract, HookExecutorError,
-    HookMutationConfig, HookOnError, HookPhaseEvent, HookRunRequest, HookRunResult, HookSpec,
-    HookStreamOutput, HookSuspendMode, HooksConfig, ResolvedHookSpec,
+    HookInvocationPayload, HookMutationConfig, HookOnError, HookPayloadBuilderInput,
+    HookPayloadContext, HookPayloadContextInput, HookPayloadIteration, HookPayloadLoop,
+    HookPayloadMetadata, HookPhaseEvent, HookRunRequest, HookRunResult, HookSpec, HookStreamOutput,
+    HookSuspendMode, HooksConfig, ResolvedHookSpec,
 };
 pub use instructions::InstructionBuilder;
 pub use landing::{LandingConfig, LandingError, LandingHandler, LandingResult};

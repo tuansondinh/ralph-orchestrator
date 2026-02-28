@@ -57,25 +57,15 @@ fn is_transient_exec_error(err: &std::io::Error) -> bool {
         }
     }
 
-    let msg = err.to_string().to_ascii_lowercase();
-    msg.contains("text file busy") || msg.contains("etxtbsy")
+    let message = err.to_string().to_ascii_lowercase();
+    message.contains("text file busy") || message.contains("etxtbsy")
 }
 
-fn run_command_output_with_retry(
-    cmd: &OsStr,
-    args: &[&str],
-    current_dir: Option<&Path>,
-) -> std::io::Result<std::process::Output> {
+fn run_command_with_retry(command: &OsStr, args: &[&str]) -> std::io::Result<std::process::Output> {
     const MAX_ATTEMPTS: usize = 5;
 
     for attempt in 0..MAX_ATTEMPTS {
-        let mut command = Command::new(cmd);
-        command.args(args);
-        if let Some(dir) = current_dir {
-            command.current_dir(dir);
-        }
-
-        match command.output() {
+        match Command::new(command).args(args).output() {
             Ok(output) => return Ok(output),
             Err(err) => {
                 if is_transient_exec_error(&err) && attempt + 1 < MAX_ATTEMPTS {
@@ -92,7 +82,7 @@ fn run_command_output_with_retry(
 
 /// Check that Node.js is installed and >= 18. Returns the version string.
 fn check_node_with(node_cmd: &OsStr) -> Result<String> {
-    let output = run_command_output_with_retry(node_cmd, &["--version"], None).map_err(|_| {
+    let output = run_command_with_retry(node_cmd, &["--version"]).map_err(|_| {
         anyhow::anyhow!(
             "Node.js is not installed or not in PATH.\n\
              Install Node.js 18+: https://nodejs.org/\n\
@@ -129,10 +119,10 @@ fn check_node_with(node_cmd: &OsStr) -> Result<String> {
 
 /// Check that npm is installed and working. Returns the version string.
 fn check_npm_with(npm_cmd: &OsStr) -> Result<String> {
-    let output = run_command_output_with_retry(npm_cmd, &["--version"], None).map_err(|_| {
+    let output = run_command_with_retry(npm_cmd, &["--version"]).map_err(|_| {
         anyhow::anyhow!(
             "npm is not installed or not in PATH.\n\
-         npm should come with Node.js. Try reinstalling Node: https://nodejs.org/"
+             npm should come with Node.js. Try reinstalling Node: https://nodejs.org/"
         )
     })?;
 

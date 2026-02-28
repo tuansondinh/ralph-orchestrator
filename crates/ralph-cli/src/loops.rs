@@ -9,6 +9,7 @@
 //! - `retry`: Re-run merge for failed loop
 //! - `discard`: Abandon loop and cleanup
 //! - `stop`: Terminate running loop
+//! - `resume`: Resume a suspended loop
 //! - `prune`: Clean up stale loops
 //! - `attach`: Open shell in worktree
 //! - `diff`: Show changes from merge-base
@@ -22,7 +23,7 @@ use clap::{Parser, Subcommand};
 
 use ralph_core::worktree::{list_ralph_worktrees, remove_worktree};
 use ralph_core::{
-    LoopRegistry, MergeButtonState, MergeQueue, MergeState, merge_button_state,
+    LoopRegistry, MergeButtonState, MergeQueue, MergeState, SuspendStateStore, merge_button_state,
     truncate_with_ellipsis,
 };
 
@@ -52,6 +53,9 @@ pub enum LoopsCommands {
 
     /// Stop a running loop
     Stop(StopArgs),
+
+    /// Resume a suspended loop
+    Resume(ResumeArgs),
 
     /// Clean up stale loops (crashed processes)
     Prune,
@@ -131,6 +135,12 @@ pub struct StopArgs {
 }
 
 #[derive(Parser, Debug)]
+pub struct ResumeArgs {
+    /// Loop ID
+    pub loop_id: String,
+}
+
+#[derive(Parser, Debug)]
 pub struct AttachArgs {
     /// Loop ID
     pub loop_id: String,
@@ -178,6 +188,7 @@ pub fn execute(args: LoopsArgs, use_colors: bool) -> Result<()> {
         Some(LoopsCommands::Retry(retry_args)) => retry_merge(retry_args),
         Some(LoopsCommands::Discard(discard_args)) => discard_loop(discard_args),
         Some(LoopsCommands::Stop(stop_args)) => stop_loop(stop_args),
+        Some(LoopsCommands::Resume(resume_args)) => resume_loop(resume_args),
         Some(LoopsCommands::Prune) => prune_stale(),
         Some(LoopsCommands::Attach(attach_args)) => attach_to_loop(attach_args),
         Some(LoopsCommands::Diff(diff_args)) => show_diff(diff_args),
@@ -848,6 +859,37 @@ fn stop_loop(args: StopArgs) -> Result<()> {
     Ok(())
 }
 
+/// Resume a suspended loop.
+fn resume_loop(args: ResumeArgs) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let (loop_id, worktree_path) = resolve_loop(&cwd, &args.loop_id)?;
+
+    let target_root = worktree_path
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cwd.clone());
+
+    let suspend_state_store = SuspendStateStore::new(&target_root);
+    let _suspend_state = suspend_state_store
+        .read_suspend_state()
+        .with_context(|| format!("Failed to read suspend-state for loop '{}'", loop_id))?
+        .context(format!(
+            "Loop '{}' is not suspended (no suspend-state found)",
+            loop_id
+        ))?;
+
+    suspend_state_store
+        .write_resume_requested()
+        .with_context(|| format!("Failed to write resume signal for loop '{}'", loop_id))?;
+
+    println!(
+        "Resume requested for loop '{}'. The loop will continue from the suspended boundary.",
+        loop_id
+    );
+
+    Ok(())
+}
+
 /// Prune stale loops.
 fn prune_stale() -> Result<()> {
     let cwd = std::env::current_dir()?;
@@ -1204,9 +1246,26 @@ fn resolve_loop(cwd: &std::path::Path, id: &str) -> Result<(String, Option<Strin
 mod tests {
     use super::*;
     use crate::test_support::CwdGuard;
-    use ralph_core::LoopLock;
+    use chrono::Utc;
     use ralph_core::loop_registry::LoopEntry;
+    use ralph_core::{
+        HookPhaseEvent, HookSuspendMode, LoopLock, SuspendStateRecord, SuspendStateStore,
+    };
     use std::process::Command;
+
+    fn write_suspend_state(store: &SuspendStateStore, loop_id: &str) {
+        let state = SuspendStateRecord::new(
+            loop_id,
+            HookPhaseEvent::PreLoopStart,
+            "hook-test",
+            "hook failed",
+            HookSuspendMode::WaitForResume,
+            Utc::now(),
+        );
+        store
+            .write_suspend_state(&state)
+            .expect("write suspend-state");
+    }
 
     #[test]
     fn test_truncate() {
@@ -1727,6 +1786,85 @@ mod tests {
 
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn test_resume_loop_writes_resume_signal_for_in_place_loop() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let _cwd = CwdGuard::set(temp_dir.path());
+
+        let loop_id = "loop-resume-in-place-1";
+        let registry = LoopRegistry::new(temp_dir.path());
+        let entry = LoopEntry::with_id(
+            loop_id,
+            "resume me",
+            None::<String>,
+            temp_dir.path().display().to_string(),
+        );
+        registry.register(entry).expect("register loop");
+
+        let store = SuspendStateStore::new(temp_dir.path());
+        write_suspend_state(&store, loop_id);
+
+        resume_loop(ResumeArgs {
+            loop_id: loop_id.to_string(),
+        })
+        .expect("resume loop");
+
+        assert!(store.resume_requested_path().exists());
+    }
+
+    #[test]
+    fn test_resume_loop_resolves_partial_id_and_targets_worktree() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let _cwd = CwdGuard::set(temp_dir.path());
+
+        let loop_id = "loop-resume-worktree-9876";
+        let worktree_path = temp_dir.path().join(".worktrees/loop-resume-worktree-9876");
+        std::fs::create_dir_all(&worktree_path).expect("create worktree dir");
+
+        let registry = LoopRegistry::new(temp_dir.path());
+        let entry = LoopEntry::with_id(
+            loop_id,
+            "resume me",
+            Some(worktree_path.display().to_string()),
+            temp_dir.path().display().to_string(),
+        );
+        registry.register(entry).expect("register loop");
+
+        let store = SuspendStateStore::new(&worktree_path);
+        write_suspend_state(&store, loop_id);
+
+        resume_loop(ResumeArgs {
+            loop_id: "9876".to_string(),
+        })
+        .expect("resume loop");
+
+        assert!(store.resume_requested_path().exists());
+        assert!(!temp_dir.path().join(".ralph/resume-requested").exists());
+    }
+
+    #[test]
+    fn test_resume_loop_rejects_non_suspended_loop() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let _cwd = CwdGuard::set(temp_dir.path());
+
+        let loop_id = "loop-not-suspended-1";
+        let registry = LoopRegistry::new(temp_dir.path());
+        let entry = LoopEntry::with_id(
+            loop_id,
+            "resume me",
+            None::<String>,
+            temp_dir.path().display().to_string(),
+        );
+        registry.register(entry).expect("register loop");
+
+        let err = resume_loop(ResumeArgs {
+            loop_id: loop_id.to_string(),
+        })
+        .expect_err("resume should fail without suspend-state");
+
+        assert!(err.to_string().contains("not suspended"));
     }
 
     #[test]

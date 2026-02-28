@@ -10,10 +10,13 @@ use ralph_adapters::{
     OutputFormat as BackendOutputFormat, PrettyStreamHandler, PtyConfig, PtyExecutor,
     QuietStreamHandler, TuiStreamHandler,
 };
+use ralph_core::diagnostics::{HookDisposition, HookRunTelemetryEntry};
 use ralph_core::{
-    CompletionAction, EventLogger, EventLoop, EventParser, EventRecord, LoopCompletionHandler,
-    LoopContext, LoopHistory, LoopRegistry, MergeQueue, RalphConfig, Record, SessionRecorder,
-    SummaryWriter, TerminationReason,
+    CompletionAction, EventLogger, EventLoop, EventParser, EventRecord, HookEngine, HookExecutor,
+    HookExecutorContract, HookOnError, HookPayloadBuilderInput, HookPayloadContextInput,
+    HookPhaseEvent, HookRunRequest, HookRunResult, LoopCompletionHandler, LoopContext, LoopHistory,
+    LoopRegistry, MergeQueue, RalphConfig, Record, SessionRecorder, SummaryWriter,
+    TerminationReason,
 };
 use ralph_proto::{Event, GuidanceTarget, HatId, RpcEvent, RpcState, RpcTaskCounts};
 use ralph_tui::Tui;
@@ -173,6 +176,26 @@ pub async fn run_loop_impl(
     // Capture the robot service shutdown flag so signal handlers can interrupt wait_for_response()
     let robot_shutdown = event_loop.robot_shutdown_flag();
 
+    let hooks_enabled = config.hooks.enabled;
+    let hook_engine = HookEngine::new(&config.hooks);
+    let hook_executor = HookExecutor::new();
+
+    dispatch_phase_event_hooks(
+        &event_loop,
+        hooks_enabled,
+        &loop_id,
+        &hook_engine,
+        &hook_executor,
+        HookPhaseEvent::PreLoopStart,
+        build_loop_start_payload_input(
+            &loop_id,
+            &ctx,
+            config.event_loop.max_iterations,
+            event_loop.state().iteration,
+            None,
+        ),
+    );
+
     // For resume mode, we initialize with a different event topic
     // This tells the planner to read existing scratchpad rather than creating a new one
     if resume {
@@ -180,6 +203,22 @@ pub async fn run_loop_impl(
     } else {
         event_loop.initialize(&prompt_content);
     }
+
+    dispatch_phase_event_hooks(
+        &event_loop,
+        hooks_enabled,
+        &loop_id,
+        &hook_engine,
+        &hook_executor,
+        HookPhaseEvent::PostLoopStart,
+        build_loop_start_payload_input(
+            &loop_id,
+            &ctx,
+            config.event_loop.max_iterations,
+            event_loop.state().iteration,
+            Some(event_loop.get_active_hat_id().as_str().to_string()),
+        ),
+    );
 
     // Set up session recording if requested
     // This records all events to a JSONL file for replay testing
@@ -1442,6 +1481,132 @@ pub async fn run_loop_impl(
                 "Cooldown delay before next iteration"
             );
             tokio::time::sleep(Duration::from_secs(cooldown)).await;
+        }
+    }
+}
+
+fn build_loop_start_payload_input(
+    loop_id: &str,
+    ctx: &LoopContext,
+    max_iterations: u32,
+    iteration_current: u32,
+    active_hat: Option<String>,
+) -> HookPayloadBuilderInput {
+    HookPayloadBuilderInput {
+        loop_id: loop_id.to_string(),
+        is_primary: ctx.is_primary(),
+        workspace: ctx.workspace().to_path_buf(),
+        repo_root: ctx.repo_root().to_path_buf(),
+        pid: std::process::id(),
+        iteration_current,
+        iteration_max: max_iterations,
+        context: HookPayloadContextInput {
+            active_hat,
+            ..HookPayloadContextInput::default()
+        },
+    }
+}
+
+fn dispatch_phase_event_hooks(
+    event_loop: &EventLoop,
+    hooks_enabled: bool,
+    loop_id: &str,
+    hook_engine: &HookEngine,
+    hook_executor: &HookExecutor,
+    phase_event: HookPhaseEvent,
+    payload_input: HookPayloadBuilderInput,
+) {
+    if !hooks_enabled {
+        return;
+    }
+
+    let resolved_hooks = hook_engine.resolve_phase_event(phase_event);
+    if resolved_hooks.is_empty() {
+        return;
+    }
+
+    let workspace_root = payload_input.workspace.clone();
+    let payload = hook_engine.build_payload(phase_event, payload_input);
+    let stdin_payload = match serde_json::to_value(&payload) {
+        Ok(value) => value,
+        Err(error) => {
+            warn!(
+                phase_event = %phase_event,
+                error = %error,
+                "Failed to serialize lifecycle hook payload; skipping phase-event dispatch"
+            );
+            return;
+        }
+    };
+
+    for hook in resolved_hooks {
+        let hook_name = hook.name.clone();
+        let phase_event_key = hook.phase_event.as_str().to_string();
+
+        let request = HookRunRequest {
+            phase_event: phase_event_key.clone(),
+            hook_name: hook_name.clone(),
+            command: hook.command.clone(),
+            workspace_root: workspace_root.clone(),
+            cwd: hook.cwd.clone(),
+            env: hook.env.clone(),
+            timeout_seconds: hook.timeout_seconds,
+            max_output_bytes: hook.max_output_bytes,
+            stdin_payload: stdin_payload.clone(),
+        };
+
+        match hook_executor.run(request) {
+            Ok(run_result) => {
+                let disposition = classify_hook_disposition(hook.on_error, &run_result);
+
+                event_loop.log_hook_run_telemetry(HookRunTelemetryEntry::from_run_result(
+                    loop_id,
+                    &phase_event_key,
+                    &hook_name,
+                    disposition,
+                    &run_result,
+                ));
+
+                if disposition == HookDisposition::Pass {
+                    debug!(
+                        phase_event = %phase_event_key,
+                        hook_name = %hook_name,
+                        duration_ms = run_result.duration_ms,
+                        "Lifecycle hook executed successfully"
+                    );
+                } else {
+                    // Step 5 captures telemetry but intentionally defers warn/block/suspend control-flow
+                    // changes to Step 6.
+                    warn!(
+                        phase_event = %phase_event_key,
+                        hook_name = %hook_name,
+                        disposition = ?disposition,
+                        exit_code = ?run_result.exit_code,
+                        timed_out = run_result.timed_out,
+                        "Lifecycle hook returned non-pass disposition; continuing"
+                    );
+                }
+            }
+            Err(error) => {
+                warn!(
+                    phase_event = %phase_event_key,
+                    hook_name = %hook_name,
+                    error = %error,
+                    "Lifecycle hook execution failed; continuing"
+                );
+            }
+        }
+    }
+}
+
+fn classify_hook_disposition(on_error: HookOnError, run_result: &HookRunResult) -> HookDisposition {
+    if !run_result.timed_out && run_result.exit_code == Some(0) {
+        HookDisposition::Pass
+    } else {
+        match on_error {
+            HookOnError::Warn => HookDisposition::Warn,
+            HookOnError::Block => HookDisposition::Block,
+            HookOnError::Suspend => HookDisposition::Suspend,
         }
     }
 }

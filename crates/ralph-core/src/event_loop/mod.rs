@@ -401,6 +401,11 @@ impl EventLoop {
         &self.registry
     }
 
+    /// Records hook telemetry for diagnostics.
+    pub fn log_hook_run_telemetry(&self, entry: crate::diagnostics::HookRunTelemetryEntry) {
+        self.diagnostics.log_hook_run(entry);
+    }
+
     /// Gets the backend configuration for a hat.
     ///
     /// If the hat has a backend configured, returns that.

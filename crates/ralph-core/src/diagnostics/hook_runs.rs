@@ -84,3 +84,179 @@ impl HookRunLogger {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn fixed_time(hour: u32, minute: u32, second: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 2, 28, hour, minute, second)
+            .single()
+            .expect("fixed timestamp")
+    }
+
+    fn sample_entry(disposition: HookDisposition) -> HookRunTelemetryEntry {
+        HookRunTelemetryEntry {
+            timestamp: fixed_time(15, 30, 2),
+            loop_id: "loop-1234-abcd".to_string(),
+            phase_event: "pre.loop.start".to_string(),
+            hook_name: "env-guard".to_string(),
+            started_at: fixed_time(15, 30, 1),
+            ended_at: fixed_time(15, 30, 2),
+            duration_ms: 923,
+            exit_code: Some(0),
+            timed_out: false,
+            stdout: HookStreamOutput {
+                content: "hook-stdout".to_string(),
+                truncated: false,
+            },
+            stderr: HookStreamOutput {
+                content: "hook-stderr".to_string(),
+                truncated: true,
+            },
+            disposition,
+        }
+    }
+
+    #[test]
+    fn hook_disposition_serializes_to_snake_case() {
+        let variants = [
+            (HookDisposition::Pass, "pass"),
+            (HookDisposition::Warn, "warn"),
+            (HookDisposition::Block, "block"),
+            (HookDisposition::Suspend, "suspend"),
+        ];
+
+        for (disposition, expected) in variants {
+            let serialized = serde_json::to_string(&disposition).expect("serialize disposition");
+            assert_eq!(serialized, format!("\"{expected}\""));
+
+            let parsed: HookDisposition =
+                serde_json::from_str(&serialized).expect("deserialize disposition");
+            assert_eq!(parsed, disposition);
+        }
+    }
+
+    #[test]
+    fn telemetry_entry_serializes_required_fields() {
+        let entry = sample_entry(HookDisposition::Pass);
+        let value = serde_json::to_value(&entry).expect("serialize telemetry entry");
+
+        for field in [
+            "timestamp",
+            "loop_id",
+            "phase_event",
+            "hook_name",
+            "started_at",
+            "ended_at",
+            "duration_ms",
+            "exit_code",
+            "timed_out",
+            "stdout",
+            "stderr",
+            "disposition",
+        ] {
+            assert!(
+                value.get(field).is_some(),
+                "serialized entry missing '{field}'"
+            );
+        }
+
+        assert_eq!(value["phase_event"], "pre.loop.start");
+        assert_eq!(value["hook_name"], "env-guard");
+        assert_eq!(value["duration_ms"], 923);
+        assert_eq!(value["disposition"], "pass");
+        assert_eq!(value["stdout"]["content"], "hook-stdout");
+        assert_eq!(value["stdout"]["truncated"], false);
+        assert_eq!(value["stderr"]["content"], "hook-stderr");
+        assert_eq!(value["stderr"]["truncated"], true);
+    }
+
+    #[test]
+    fn from_run_result_maps_hook_runtime_fields() {
+        let run_result = HookRunResult {
+            started_at: fixed_time(16, 0, 0),
+            ended_at: fixed_time(16, 0, 2),
+            duration_ms: 2000,
+            exit_code: Some(17),
+            timed_out: true,
+            stdout: HookStreamOutput {
+                content: "captured-stdout".to_string(),
+                truncated: true,
+            },
+            stderr: HookStreamOutput {
+                content: "captured-stderr".to_string(),
+                truncated: false,
+            },
+        };
+
+        let timestamp_before = Utc::now();
+        let entry = HookRunTelemetryEntry::from_run_result(
+            "loop-777",
+            "post.iteration.start",
+            "manual-gate",
+            HookDisposition::Block,
+            &run_result,
+        );
+        let timestamp_after = Utc::now();
+
+        assert_eq!(entry.loop_id, "loop-777");
+        assert_eq!(entry.phase_event, "post.iteration.start");
+        assert_eq!(entry.hook_name, "manual-gate");
+        assert_eq!(entry.started_at, run_result.started_at);
+        assert_eq!(entry.ended_at, run_result.ended_at);
+        assert_eq!(entry.duration_ms, run_result.duration_ms);
+        assert_eq!(entry.exit_code, run_result.exit_code);
+        assert_eq!(entry.timed_out, run_result.timed_out);
+        assert_eq!(entry.stdout.content, run_result.stdout.content);
+        assert_eq!(entry.stdout.truncated, run_result.stdout.truncated);
+        assert_eq!(entry.stderr.content, run_result.stderr.content);
+        assert_eq!(entry.stderr.truncated, run_result.stderr.truncated);
+        assert_eq!(entry.disposition, HookDisposition::Block);
+        assert!(entry.timestamp >= timestamp_before);
+        assert!(entry.timestamp <= timestamp_after);
+    }
+
+    #[test]
+    fn hook_run_logger_persists_jsonl_entries() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut logger = HookRunLogger::new(temp_dir.path()).expect("create logger");
+
+        let entry = sample_entry(HookDisposition::Warn);
+        logger.log(&entry).expect("write telemetry entry");
+        drop(logger);
+
+        let content = fs::read_to_string(temp_dir.path().join("hook-runs.jsonl"))
+            .expect("read hook-runs.jsonl");
+        let lines: Vec<_> = content.lines().collect();
+        assert_eq!(lines.len(), 1);
+
+        let parsed: HookRunTelemetryEntry =
+            serde_json::from_str(lines[0]).expect("parse logged telemetry entry");
+        assert_eq!(parsed.loop_id, "loop-1234-abcd");
+        assert_eq!(parsed.phase_event, "pre.loop.start");
+        assert_eq!(parsed.hook_name, "env-guard");
+        assert_eq!(parsed.disposition, HookDisposition::Warn);
+        assert_eq!(parsed.stdout.content, "hook-stdout");
+        assert_eq!(parsed.stderr.content, "hook-stderr");
+        assert!(parsed.stderr.truncated);
+    }
+
+    #[test]
+    fn hook_run_logger_flushes_on_each_write() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let mut logger = HookRunLogger::new(temp_dir.path()).expect("create logger");
+
+        logger
+            .log(&sample_entry(HookDisposition::Suspend))
+            .expect("write telemetry entry");
+
+        // Validate flush behavior without dropping logger.
+        let content = fs::read_to_string(temp_dir.path().join("hook-runs.jsonl"))
+            .expect("read hook-runs.jsonl");
+        assert_eq!(content.lines().count(), 1);
+    }
+}

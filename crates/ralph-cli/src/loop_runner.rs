@@ -2996,6 +2996,185 @@ printf '%s|%s\n' "$1" "$phase" >> "$2""#
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_loop_start_dispatch_warn_continues_and_block_aborts() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(
+            HookPhaseEvent::PreLoopStart,
+            vec![hook_spec_with_command_and_on_error(
+                "warn-pre-loop-start",
+                vec!["sh".to_string(), "-c".to_string(), "exit 17".to_string()],
+                HookOnError::Warn,
+            )],
+        );
+        events.insert(
+            HookPhaseEvent::PostLoopStart,
+            vec![hook_spec_with_command_and_on_error(
+                "block-post-loop-start",
+                vec!["sh".to_string(), "-c".to_string(), "exit 29".to_string()],
+                HookOnError::Block,
+            )],
+        );
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+
+        let pre_loop_start_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreLoopStart,
+            build_loop_start_payload_input("loop-test", &loop_ctx, 5, 0, None),
+        );
+
+        assert_eq!(pre_loop_start_outcomes.len(), 1);
+        assert_eq!(
+            pre_loop_start_outcomes[0].disposition,
+            HookDisposition::Warn
+        );
+        assert_eq!(
+            pre_loop_start_outcomes[0].failure,
+            Some(HookDispatchFailure::HookRunFailed {
+                exit_code: Some(17),
+                timed_out: false,
+            })
+        );
+        assert!(
+            fail_if_blocking_loop_start_outcomes(&pre_loop_start_outcomes).is_ok(),
+            "warn disposition should continue across loop.start boundary"
+        );
+
+        let post_loop_start_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PostLoopStart,
+            build_loop_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                0,
+                Some("planner".to_string()),
+            ),
+        );
+
+        assert_eq!(post_loop_start_outcomes.len(), 1);
+        assert_eq!(
+            post_loop_start_outcomes[0].disposition,
+            HookDisposition::Block
+        );
+        let post_loop_start_error = fail_if_blocking_loop_start_outcomes(&post_loop_start_outcomes)
+            .expect_err("block disposition should abort loop.start boundary");
+        let post_loop_start_message = post_loop_start_error.to_string();
+        assert!(post_loop_start_message.contains("block-post-loop-start"));
+        assert!(post_loop_start_message.contains("post.loop.start"));
+        assert!(post_loop_start_message.contains("hook exited with code 29"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_iteration_start_dispatch_warn_continues_and_block_aborts() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(
+            HookPhaseEvent::PreIterationStart,
+            vec![hook_spec_with_command_and_on_error(
+                "warn-pre-iteration-start",
+                vec!["sh".to_string(), "-c".to_string(), "exit 19".to_string()],
+                HookOnError::Warn,
+            )],
+        );
+        events.insert(
+            HookPhaseEvent::PostIterationStart,
+            vec![hook_spec_with_command_and_on_error(
+                "block-post-iteration-start",
+                vec!["sh".to_string(), "-c".to_string(), "exit 31".to_string()],
+                HookOnError::Block,
+            )],
+        );
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+
+        let pre_iteration_start_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreIterationStart,
+            build_iteration_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                1,
+                Some("planner".to_string()),
+                None,
+                None,
+            ),
+        );
+
+        assert_eq!(pre_iteration_start_outcomes.len(), 1);
+        assert_eq!(
+            pre_iteration_start_outcomes[0].disposition,
+            HookDisposition::Warn
+        );
+        assert_eq!(
+            pre_iteration_start_outcomes[0].failure,
+            Some(HookDispatchFailure::HookRunFailed {
+                exit_code: Some(19),
+                timed_out: false,
+            })
+        );
+        assert!(
+            fail_if_blocking_iteration_start_outcomes(&pre_iteration_start_outcomes).is_ok(),
+            "warn disposition should continue across iteration.start boundary"
+        );
+
+        let post_iteration_start_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PostIterationStart,
+            build_iteration_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                1,
+                Some("planner".to_string()),
+                Some("builder".to_string()),
+                Some("task-123".to_string()),
+            ),
+        );
+
+        assert_eq!(post_iteration_start_outcomes.len(), 1);
+        assert_eq!(
+            post_iteration_start_outcomes[0].disposition,
+            HookDisposition::Block
+        );
+        let post_iteration_start_error =
+            fail_if_blocking_iteration_start_outcomes(&post_iteration_start_outcomes)
+                .expect_err("block disposition should abort iteration.start boundary");
+        let post_iteration_start_message = post_iteration_start_error.to_string();
+        assert!(post_iteration_start_message.contains("block-post-iteration-start"));
+        assert!(post_iteration_start_message.contains("post.iteration.start"));
+        assert!(post_iteration_start_message.contains("hook exited with code 31"));
+    }
+
     #[test]
     fn test_fail_if_blocking_loop_start_outcomes_allows_non_blocking_dispositions() {
         let outcomes = vec![

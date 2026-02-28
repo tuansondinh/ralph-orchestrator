@@ -346,10 +346,11 @@ impl agent_client_protocol::Client for RalphAcpClient {
         &self,
         args: KillTerminalCommandRequest,
     ) -> agent_client_protocol::Result<KillTerminalCommandResponse> {
+        let terminal_id = args.terminal_id.0.to_string();
         let mut state = self
             .terminals
             .borrow_mut()
-            .remove(args.terminal_id.0.as_ref())
+            .remove(terminal_id.as_str())
             .ok_or_else(|| {
                 let mut err = agent_client_protocol::Error::invalid_params();
                 err.message = format!("unknown terminal: {}", args.terminal_id);
@@ -364,6 +365,9 @@ impl agent_client_protocol::Client for RalphAcpClient {
             *state.exit_status.borrow_mut() =
                 Some(TerminalExitStatus::new().exit_code(s.code().map(|c| c as u32)));
         }
+
+        // Keep terminal state addressable after kill for subsequent output/wait requests.
+        self.terminals.borrow_mut().insert(terminal_id, state);
 
         Ok(KillTerminalCommandResponse::new())
     }

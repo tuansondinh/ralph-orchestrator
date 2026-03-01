@@ -32,6 +32,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      - name: Build ralph binary
+        run: cargo build --bin ralph
       - name: Run tests
         run: cargo test
 

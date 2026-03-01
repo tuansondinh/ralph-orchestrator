@@ -87,7 +87,122 @@ pub struct HooksBddScenario {
     steps: Vec<HooksStep>,
 }
 
-/// Result of executing one placeholder scenario.
+/// Runtime command artifact scaffold for one hooks BDD integration invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HooksBddRunArtifact {
+    /// Stable artifact name (e.g. "hooks.validate" or "ralph.run").
+    pub name: String,
+    /// Command preview for failure output.
+    pub command: String,
+    /// Working directory where the command runs.
+    pub working_dir: PathBuf,
+    /// Command timeout marker.
+    pub timed_out: bool,
+    /// Exit status code when available.
+    pub exit_code: Option<i32>,
+    /// Planned stdout capture location.
+    pub stdout_path: PathBuf,
+    /// Planned stderr capture location.
+    pub stderr_path: PathBuf,
+}
+
+/// Scenario-level artifact manifest used by hooks BDD runtime assertions.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HooksBddScenarioArtifacts {
+    /// Root directory where scenario artifacts are written.
+    pub root_dir: PathBuf,
+    /// Command-level artifacts captured during the scenario.
+    pub run_artifacts: Vec<HooksBddRunArtifact>,
+}
+
+/// Runtime harness scaffold for hooks BDD integration execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HooksBddIntegrationHarness {
+    scenario_id: String,
+    scenario_name: String,
+    ci_safe_mode: bool,
+    artifacts: HooksBddScenarioArtifacts,
+}
+
+impl HooksBddIntegrationHarness {
+    /// Creates a new harness with deterministic artifact directory scaffolding.
+    pub fn new(scenario: &HooksBddScenario, ci_safe_mode: bool) -> Self {
+        let scenario_slug = format!(
+            "{}-{}",
+            slugify_path_segment(&scenario.scenario_id),
+            slugify_path_segment(&scenario.scenario_name)
+        );
+
+        let root_dir = default_hooks_bdd_artifact_root().join(scenario_slug);
+
+        Self {
+            scenario_id: scenario.scenario_id.clone(),
+            scenario_name: scenario.scenario_name.clone(),
+            ci_safe_mode,
+            artifacts: HooksBddScenarioArtifacts {
+                root_dir,
+                run_artifacts: Vec::new(),
+            },
+        }
+    }
+
+    /// Returns the stable AC identifier for this harness.
+    pub fn scenario_id(&self) -> &str {
+        &self.scenario_id
+    }
+
+    /// Returns the human-readable scenario name.
+    pub fn scenario_name(&self) -> &str {
+        &self.scenario_name
+    }
+
+    /// Returns whether the harness is in CI-safe mode.
+    pub fn ci_safe_mode(&self) -> bool {
+        self.ci_safe_mode
+    }
+
+    /// Returns immutable access to scaffolded artifact metadata.
+    pub fn artifacts(&self) -> &HooksBddScenarioArtifacts {
+        &self.artifacts
+    }
+
+    /// Returns mutable access to scaffolded artifact metadata.
+    pub fn artifacts_mut(&mut self) -> &mut HooksBddScenarioArtifacts {
+        &mut self.artifacts
+    }
+
+    /// Registers a run artifact scaffold and returns its index.
+    pub fn scaffold_run_artifact(
+        &mut self,
+        name: impl Into<String>,
+        command: impl Into<String>,
+    ) -> usize {
+        let name = name.into();
+        let command = command.into();
+        let next_index = self.artifacts.run_artifacts.len() + 1;
+        let artifact_slug = format!("{:02}-{}", next_index, slugify_path_segment(&name));
+        let artifact_dir = self.artifacts.root_dir.join(artifact_slug);
+
+        self.artifacts.run_artifacts.push(HooksBddRunArtifact {
+            name,
+            command,
+            working_dir: PathBuf::new(),
+            timed_out: false,
+            exit_code: None,
+            stdout_path: artifact_dir.join("stdout.log"),
+            stderr_path: artifact_dir.join("stderr.log"),
+        });
+
+        next_index - 1
+    }
+
+    /// Consumes the harness and returns captured artifact metadata.
+    pub fn into_artifacts(self) -> HooksBddScenarioArtifacts {
+        self.artifacts
+    }
+}
+
+/// Result of executing one hooks BDD scenario.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HooksBddScenarioResult {
     /// Stable AC ID tag (or fallback scenario title if tag missing).
@@ -100,6 +215,8 @@ pub struct HooksBddScenarioResult {
     pub passed: bool,
     /// Pass/fail reason for terminal output.
     pub message: String,
+    /// Runtime artifacts scaffolded and/or produced during evaluation.
+    pub artifacts: HooksBddScenarioArtifacts,
 }
 
 /// Aggregated hooks BDD run results.
@@ -142,6 +259,36 @@ enum HooksStepKeyword {
 struct HooksStep {
     keyword: HooksStepKeyword,
     text: String,
+}
+
+fn default_hooks_bdd_artifact_root() -> PathBuf {
+    if let Some(workspace_root) = find_workspace_root() {
+        return workspace_root.join(".ralph/hooks-bdd-artifacts");
+    }
+
+    PathBuf::from(".ralph/hooks-bdd-artifacts")
+}
+
+fn slugify_path_segment(value: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_was_separator = false;
+
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            slug.push('-');
+            previous_was_separator = true;
+        }
+    }
+
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "scenario".to_string()
+    } else {
+        slug.to_string()
+    }
 }
 
 /// Discovers hook BDD scenarios from `features/hooks/*.feature`.
@@ -190,13 +337,17 @@ pub fn run_hooks_bdd_suite(config: &HooksBddConfig) -> Result<HooksBddRunResults
 
 /// Execute a scenario through the AC evaluator dispatch.
 fn execute_scenario(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    // Route through evaluator dispatch for green verification
+    let mut harness = HooksBddIntegrationHarness::new(scenario, ci_safe_mode);
+
+    // Route through evaluator dispatch for green verification.
     let evaluator = dispatch_ac_evaluator(&scenario.scenario_id);
-    evaluator(scenario, ci_safe_mode)
+    evaluator(scenario, &mut harness, ci_safe_mode)
 }
 
 /// AC evaluator dispatch map - routes AC IDs to their evaluator functions.
-fn dispatch_ac_evaluator(ac_id: &str) -> fn(&HooksBddScenario, bool) -> HooksBddScenarioResult {
+fn dispatch_ac_evaluator(
+    ac_id: &str,
+) -> fn(&HooksBddScenario, &mut HooksBddIntegrationHarness, bool) -> HooksBddScenarioResult {
     match ac_id {
         // AC-01..AC-03: Scope, lifecycle events, pre/post phases
         "AC-01" => evaluate_ac_01,
@@ -223,43 +374,47 @@ fn dispatch_ac_evaluator(ac_id: &str) -> fn(&HooksBddScenario, bool) -> HooksBdd
     }
 }
 
+fn build_scenario_result(
+    scenario: &HooksBddScenario,
+    harness: &HooksBddIntegrationHarness,
+    passed: bool,
+    message: String,
+) -> HooksBddScenarioResult {
+    HooksBddScenarioResult {
+        scenario_id: scenario.scenario_id.clone(),
+        scenario_name: scenario.scenario_name.clone(),
+        feature_file: scenario.feature_file.clone(),
+        passed,
+        message,
+        artifacts: harness.artifacts().clone(),
+    }
+}
+
 /// Green evaluator wrapper that validates acceptance context and returns pass/fail.
 fn evaluate_green_acceptance(
     scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
     ci_safe_mode: bool,
     context_guard: fn(bool, &str) -> Result<(), String>,
-    evaluation: fn() -> Result<(), String>,
+    evaluation: fn(&mut HooksBddIntegrationHarness) -> Result<(), String>,
 ) -> HooksBddScenarioResult {
     // Guard CI-safe mode requirement
     if let Err(msg) = context_guard(ci_safe_mode, &scenario.scenario_id) {
-        return HooksBddScenarioResult {
-            scenario_id: scenario.scenario_id.clone(),
-            scenario_name: scenario.scenario_name.clone(),
-            feature_file: scenario.feature_file.clone(),
-            passed: false,
-            message: msg,
-        };
+        return build_scenario_result(scenario, harness, false, msg);
     }
 
-    // Run the actual evaluation
-    match evaluation() {
-        Ok(()) => HooksBddScenarioResult {
-            scenario_id: scenario.scenario_id.clone(),
-            scenario_name: scenario.scenario_name.clone(),
-            feature_file: scenario.feature_file.clone(),
-            passed: true,
-            message: format!(
+    // Run the actual evaluation.
+    match evaluation(harness) {
+        Ok(()) => build_scenario_result(
+            scenario,
+            harness,
+            true,
+            format!(
                 "{}: acceptance criterion verified green",
                 scenario.scenario_id
             ),
-        },
-        Err(msg) => HooksBddScenarioResult {
-            scenario_id: scenario.scenario_id.clone(),
-            scenario_name: scenario.scenario_name.clone(),
-            feature_file: scenario.feature_file.clone(),
-            passed: false,
-            message: msg,
-        },
+        ),
+        Err(msg) => build_scenario_result(scenario, harness, false, msg),
     }
 }
 
@@ -277,18 +432,18 @@ fn validate_acceptance_context(ci_safe_mode: bool, ac_id: &str) -> Result<(), St
 /// Fallback evaluator for unmapped acceptance IDs.
 fn evaluate_unmapped_acceptance(
     scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
     _ci_safe_mode: bool,
 ) -> HooksBddScenarioResult {
-    HooksBddScenarioResult {
-        scenario_id: scenario.scenario_id.clone(),
-        scenario_name: scenario.scenario_name.clone(),
-        feature_file: scenario.feature_file.clone(),
-        passed: false,
-        message: format!(
+    build_scenario_result(
+        scenario,
+        harness,
+        false,
+        format!(
             "{}: no evaluator implemented - scenario is pending",
             scenario.scenario_id
         ),
-    }
+    )
 }
 
 // =============================================================================
@@ -380,1058 +535,1238 @@ fn assert_workspace_source_contains(
 // AC-01: Per-project scope only
 // =============================================================================
 
-fn evaluate_ac_01(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/config.rs",
-            &[
-                (
-                    "RalphConfig carries hooks config at project scope",
-                    "pub hooks: HooksConfig,",
-                ),
-                (
-                    "RalphConfig default initializes hooks without global source",
-                    "hooks: HooksConfig::default(),",
-                ),
-                (
-                    "hooks docs explicitly describe per-project scope",
-                    "Controls per-project orchestrator lifecycle hooks.",
-                ),
-            ],
-        )?;
+fn evaluate_ac_01(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/config.rs",
+                &[
+                    (
+                        "RalphConfig carries hooks config at project scope",
+                        "pub hooks: HooksConfig,",
+                    ),
+                    (
+                        "RalphConfig default initializes hooks without global source",
+                        "hooks: HooksConfig::default(),",
+                    ),
+                    (
+                        "hooks docs explicitly describe per-project scope",
+                        "Controls per-project orchestrator lifecycle hooks.",
+                    ),
+                ],
+            )?;
 
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/hooks/engine.rs",
-            &[
-                (
-                    "HookEngine is constructed directly from HooksConfig",
-                    "pub fn new(config: &HooksConfig) -> Self {",
-                ),
-                (
-                    "HookEngine clones defaults from project config",
-                    "defaults: config.defaults.clone(),",
-                ),
-                (
-                    "HookEngine clones event map from project config",
-                    "hooks_by_phase_event: config.events.clone(),",
-                ),
-            ],
-        )?;
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/hooks/engine.rs",
+                &[
+                    (
+                        "HookEngine is constructed directly from HooksConfig",
+                        "pub fn new(config: &HooksConfig) -> Self {",
+                    ),
+                    (
+                        "HookEngine clones defaults from project config",
+                        "defaults: config.defaults.clone(),",
+                    ),
+                    (
+                        "HookEngine clones event map from project config",
+                        "hooks_by_phase_event: config.events.clone(),",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-02: Mandatory lifecycle events supported
 // =============================================================================
 
-fn evaluate_ac_02(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/config.rs",
-            &[
-                (
-                    "pre.loop.start phase-event parses",
-                    "\"pre.loop.start\" => Some(Self::PreLoopStart),",
-                ),
-                (
-                    "post.loop.start phase-event parses",
-                    "\"post.loop.start\" => Some(Self::PostLoopStart),",
-                ),
-                (
-                    "pre.iteration.start phase-event parses",
-                    "\"pre.iteration.start\" => Some(Self::PreIterationStart),",
-                ),
-                (
-                    "post.iteration.start phase-event parses",
-                    "\"post.iteration.start\" => Some(Self::PostIterationStart),",
-                ),
-                (
-                    "pre.plan.created phase-event parses",
-                    "\"pre.plan.created\" => Some(Self::PrePlanCreated),",
-                ),
-                (
-                    "post.plan.created phase-event parses",
-                    "\"post.plan.created\" => Some(Self::PostPlanCreated),",
-                ),
-                (
-                    "pre.human.interact phase-event parses",
-                    "\"pre.human.interact\" => Some(Self::PreHumanInteract),",
-                ),
-                (
-                    "post.human.interact phase-event parses",
-                    "\"post.human.interact\" => Some(Self::PostHumanInteract),",
-                ),
-                (
-                    "pre.loop.complete phase-event parses",
-                    "\"pre.loop.complete\" => Some(Self::PreLoopComplete),",
-                ),
-                (
-                    "post.loop.complete phase-event parses",
-                    "\"post.loop.complete\" => Some(Self::PostLoopComplete),",
-                ),
-                (
-                    "pre.loop.error phase-event parses",
-                    "\"pre.loop.error\" => Some(Self::PreLoopError),",
-                ),
-                (
-                    "post.loop.error phase-event parses",
-                    "\"post.loop.error\" => Some(Self::PostLoopError),",
-                ),
-            ],
-        )?;
+fn evaluate_ac_02(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/config.rs",
+                &[
+                    (
+                        "pre.loop.start phase-event parses",
+                        "\"pre.loop.start\" => Some(Self::PreLoopStart),",
+                    ),
+                    (
+                        "post.loop.start phase-event parses",
+                        "\"post.loop.start\" => Some(Self::PostLoopStart),",
+                    ),
+                    (
+                        "pre.iteration.start phase-event parses",
+                        "\"pre.iteration.start\" => Some(Self::PreIterationStart),",
+                    ),
+                    (
+                        "post.iteration.start phase-event parses",
+                        "\"post.iteration.start\" => Some(Self::PostIterationStart),",
+                    ),
+                    (
+                        "pre.plan.created phase-event parses",
+                        "\"pre.plan.created\" => Some(Self::PrePlanCreated),",
+                    ),
+                    (
+                        "post.plan.created phase-event parses",
+                        "\"post.plan.created\" => Some(Self::PostPlanCreated),",
+                    ),
+                    (
+                        "pre.human.interact phase-event parses",
+                        "\"pre.human.interact\" => Some(Self::PreHumanInteract),",
+                    ),
+                    (
+                        "post.human.interact phase-event parses",
+                        "\"post.human.interact\" => Some(Self::PostHumanInteract),",
+                    ),
+                    (
+                        "pre.loop.complete phase-event parses",
+                        "\"pre.loop.complete\" => Some(Self::PreLoopComplete),",
+                    ),
+                    (
+                        "post.loop.complete phase-event parses",
+                        "\"post.loop.complete\" => Some(Self::PostLoopComplete),",
+                    ),
+                    (
+                        "pre.loop.error phase-event parses",
+                        "\"pre.loop.error\" => Some(Self::PreLoopError),",
+                    ),
+                    (
+                        "post.loop.error phase-event parses",
+                        "\"post.loop.error\" => Some(Self::PostLoopError),",
+                    ),
+                ],
+            )?;
 
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/hooks/engine.rs",
-            &[
-                (
-                    "phase-event resolver dispatches parsed canonical keys",
-                    "HookPhaseEvent::parse(phase_event)",
-                ),
-                ("payload builder carries phase", "phase: phase.to_string(),"),
-                ("payload builder carries event", "event: event.to_string(),"),
-                (
-                    "payload builder carries canonical phase_event",
-                    "phase_event: phase_event.as_str().to_string(),",
-                ),
-                (
-                    "payload includes loop block",
-                    "loop_context: HookPayloadLoop {",
-                ),
-                (
-                    "payload includes iteration block",
-                    "iteration: HookPayloadIteration {",
-                ),
-                (
-                    "payload includes context block",
-                    "context: HookPayloadContext {",
-                ),
-                (
-                    "payload includes metadata block",
-                    "metadata: HookPayloadMetadata {",
-                ),
-            ],
-        )?;
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/hooks/engine.rs",
+                &[
+                    (
+                        "phase-event resolver dispatches parsed canonical keys",
+                        "HookPhaseEvent::parse(phase_event)",
+                    ),
+                    ("payload builder carries phase", "phase: phase.to_string(),"),
+                    ("payload builder carries event", "event: event.to_string(),"),
+                    (
+                        "payload builder carries canonical phase_event",
+                        "phase_event: phase_event.as_str().to_string(),",
+                    ),
+                    (
+                        "payload includes loop block",
+                        "loop_context: HookPayloadLoop {",
+                    ),
+                    (
+                        "payload includes iteration block",
+                        "iteration: HookPayloadIteration {",
+                    ),
+                    (
+                        "payload includes context block",
+                        "context: HookPayloadContext {",
+                    ),
+                    (
+                        "payload includes metadata block",
+                        "metadata: HookPayloadMetadata {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-03: Pre/post phase support
 // =============================================================================
 
-fn evaluate_ac_03(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/config.rs",
-            &[
-                (
-                    "pre.loop.start serde key exists",
-                    "#[serde(rename = \"pre.loop.start\")]",
-                ),
-                (
-                    "post.loop.start serde key exists",
-                    "#[serde(rename = \"post.loop.start\")]",
-                ),
-                (
-                    "pre.iteration.start serde key exists",
-                    "#[serde(rename = \"pre.iteration.start\")]",
-                ),
-                (
-                    "post.iteration.start serde key exists",
-                    "#[serde(rename = \"post.iteration.start\")]",
-                ),
-                (
-                    "pre.plan.created serde key exists",
-                    "#[serde(rename = \"pre.plan.created\")]",
-                ),
-                (
-                    "post.plan.created serde key exists",
-                    "#[serde(rename = \"post.plan.created\")]",
-                ),
-                (
-                    "pre.human.interact serde key exists",
-                    "#[serde(rename = \"pre.human.interact\")]",
-                ),
-                (
-                    "post.human.interact serde key exists",
-                    "#[serde(rename = \"post.human.interact\")]",
-                ),
-                (
-                    "pre.loop.complete serde key exists",
-                    "#[serde(rename = \"pre.loop.complete\")]",
-                ),
-                (
-                    "post.loop.complete serde key exists",
-                    "#[serde(rename = \"post.loop.complete\")]",
-                ),
-                (
-                    "pre.loop.error serde key exists",
-                    "#[serde(rename = \"pre.loop.error\")]",
-                ),
-                (
-                    "post.loop.error serde key exists",
-                    "#[serde(rename = \"post.loop.error\")]",
-                ),
-            ],
-        )?;
+fn evaluate_ac_03(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/config.rs",
+                &[
+                    (
+                        "pre.loop.start serde key exists",
+                        "#[serde(rename = \"pre.loop.start\")]",
+                    ),
+                    (
+                        "post.loop.start serde key exists",
+                        "#[serde(rename = \"post.loop.start\")]",
+                    ),
+                    (
+                        "pre.iteration.start serde key exists",
+                        "#[serde(rename = \"pre.iteration.start\")]",
+                    ),
+                    (
+                        "post.iteration.start serde key exists",
+                        "#[serde(rename = \"post.iteration.start\")]",
+                    ),
+                    (
+                        "pre.plan.created serde key exists",
+                        "#[serde(rename = \"pre.plan.created\")]",
+                    ),
+                    (
+                        "post.plan.created serde key exists",
+                        "#[serde(rename = \"post.plan.created\")]",
+                    ),
+                    (
+                        "pre.human.interact serde key exists",
+                        "#[serde(rename = \"pre.human.interact\")]",
+                    ),
+                    (
+                        "post.human.interact serde key exists",
+                        "#[serde(rename = \"post.human.interact\")]",
+                    ),
+                    (
+                        "pre.loop.complete serde key exists",
+                        "#[serde(rename = \"pre.loop.complete\")]",
+                    ),
+                    (
+                        "post.loop.complete serde key exists",
+                        "#[serde(rename = \"post.loop.complete\")]",
+                    ),
+                    (
+                        "pre.loop.error serde key exists",
+                        "#[serde(rename = \"pre.loop.error\")]",
+                    ),
+                    (
+                        "post.loop.error serde key exists",
+                        "#[serde(rename = \"post.loop.error\")]",
+                    ),
+                ],
+            )?;
 
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/hooks/engine.rs",
-            &[
-                (
-                    "phase/event splitting helper exists",
-                    "fn split_phase_event(phase_event: HookPhaseEvent) -> (&'static str, &'static str) {",
-                ),
-                (
-                    "split helper derives phase and event from canonical key",
-                    "phase_event.as_str().split_once('.')",
-                ),
-                (
-                    "payload build uses split pre/post phase",
-                    "let (phase, event) = split_phase_event(phase_event);",
-                ),
-            ],
-        )?;
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/hooks/engine.rs",
+                &[
+                    (
+                        "phase/event splitting helper exists",
+                        "fn split_phase_event(phase_event: HookPhaseEvent) -> (&'static str, &'static str) {",
+                    ),
+                    (
+                        "split helper derives phase and event from canonical key",
+                        "phase_event.as_str().split_once('.')",
+                    ),
+                    (
+                        "payload build uses split pre/post phase",
+                        "let (phase, event) = split_phase_event(phase_event);",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-04: Deterministic ordering
 // =============================================================================
 
-fn evaluate_ac_04(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/config.rs",
-            &[(
-                "phase-event hook lists preserve declaration order via Vec",
-                "pub events: HashMap<HookPhaseEvent, Vec<HookSpec>>,",
-            )],
-        )?;
+fn evaluate_ac_04(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/config.rs",
+                &[(
+                    "phase-event hook lists preserve declaration order via Vec",
+                    "pub events: HashMap<HookPhaseEvent, Vec<HookSpec>>,",
+                )],
+            )?;
 
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/hooks/engine.rs",
-            &[
-                (
-                    "resolved hook spec stores declaration order",
-                    "pub declaration_order: usize,",
-                ),
-                (
-                    "resolver enumerates hooks in declaration order",
-                    ".enumerate()",
-                ),
-                (
-                    "resolver forwards declaration order into resolved spec",
-                    "ResolvedHookSpec::from_spec(",
-                ),
-                (
-                    "engine unit test guards declaration-order contract",
-                    "fn resolve_phase_event_preserves_declaration_order() {",
-                ),
-                (
-                    "declaration order assertion for first hook",
-                    "assert_eq!(resolved[0].declaration_order, 0);",
-                ),
-                (
-                    "declaration order assertion for second hook",
-                    "assert_eq!(resolved[1].declaration_order, 1);",
-                ),
-            ],
-        )?;
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/hooks/engine.rs",
+                &[
+                    (
+                        "resolved hook spec stores declaration order",
+                        "pub declaration_order: usize,",
+                    ),
+                    (
+                        "resolver enumerates hooks in declaration order",
+                        ".enumerate()",
+                    ),
+                    (
+                        "resolver forwards declaration order into resolved spec",
+                        "ResolvedHookSpec::from_spec(",
+                    ),
+                    (
+                        "engine unit test guards declaration-order contract",
+                        "fn resolve_phase_event_preserves_declaration_order() {",
+                    ),
+                    (
+                        "declaration order assertion for first hook",
+                        "assert_eq!(resolved[0].declaration_order, 0);",
+                    ),
+                    (
+                        "declaration order assertion for second hook",
+                        "assert_eq!(resolved[1].declaration_order, 1);",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-05: JSON stdin contract
 // =============================================================================
 
-fn evaluate_ac_05(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/hooks/executor.rs",
-            &[
-                (
-                    "HookRunRequest carries JSON stdin payload contract",
-                    "pub stdin_payload: serde_json::Value,",
-                ),
-                (
-                    "executor configures child stdin as piped",
-                    "command.stdin(Stdio::piped());",
-                ),
-                (
-                    "executor writes stdin payload before waiting for completion",
-                    "write_stdin_payload(",
-                ),
-                (
-                    "stdin payload is serialized as JSON bytes",
-                    "serde_json::to_vec(stdin_payload)",
-                ),
-                (
-                    "serialized payload bytes are written to child stdin",
-                    "stdin.write_all(&payload)",
-                ),
-                (
-                    "unit test verifies JSON payload delivery to stdin",
-                    "fn run_writes_json_payload_to_hook_stdin() {",
-                ),
-            ],
-        )?;
+fn evaluate_ac_05(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/hooks/executor.rs",
+                &[
+                    (
+                        "HookRunRequest carries JSON stdin payload contract",
+                        "pub stdin_payload: serde_json::Value,",
+                    ),
+                    (
+                        "executor configures child stdin as piped",
+                        "command.stdin(Stdio::piped());",
+                    ),
+                    (
+                        "executor writes stdin payload before waiting for completion",
+                        "write_stdin_payload(",
+                    ),
+                    (
+                        "stdin payload is serialized as JSON bytes",
+                        "serde_json::to_vec(stdin_payload)",
+                    ),
+                    (
+                        "serialized payload bytes are written to child stdin",
+                        "stdin.write_all(&payload)",
+                    ),
+                    (
+                        "unit test verifies JSON payload delivery to stdin",
+                        "fn run_writes_json_payload_to_hook_stdin() {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-06: Timeout safeguard
 // =============================================================================
 
-fn evaluate_ac_06(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/hooks/executor.rs",
-            &[
-                (
-                    "HookRunRequest carries per-hook timeout guardrail",
-                    "pub timeout_seconds: u64,",
-                ),
-                (
-                    "run path forwards request timeout into completion wait",
-                    "request.timeout_seconds,",
-                ),
-                (
-                    "wait loop derives timeout duration budget",
-                    "let timeout = Duration::from_secs(timeout_seconds);",
-                ),
-                (
-                    "timeout path terminates long-running process",
-                    "let status = terminate_for_timeout(",
-                ),
-                (
-                    "executor captures timed_out result from wait path",
-                    "let (status, timed_out) = wait_for_completion(",
-                ),
-                (
-                    "unit test verifies timeout safeguard behavior",
-                    "fn run_marks_timed_out_when_command_exceeds_timeout() {",
-                ),
-            ],
-        )?;
+fn evaluate_ac_06(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/hooks/executor.rs",
+                &[
+                    (
+                        "HookRunRequest carries per-hook timeout guardrail",
+                        "pub timeout_seconds: u64,",
+                    ),
+                    (
+                        "run path forwards request timeout into completion wait",
+                        "request.timeout_seconds,",
+                    ),
+                    (
+                        "wait loop derives timeout duration budget",
+                        "let timeout = Duration::from_secs(timeout_seconds);",
+                    ),
+                    (
+                        "timeout path terminates long-running process",
+                        "let status = terminate_for_timeout(",
+                    ),
+                    (
+                        "executor captures timed_out result from wait path",
+                        "let (status, timed_out) = wait_for_completion(",
+                    ),
+                    (
+                        "unit test verifies timeout safeguard behavior",
+                        "fn run_marks_timed_out_when_command_exceeds_timeout() {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-07: Output truncation safeguard
 // =============================================================================
 
-fn evaluate_ac_07(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/hooks/executor.rs",
-            &[
-                (
-                    "HookRunRequest carries max_output_bytes safeguard",
-                    "pub max_output_bytes: u64,",
-                ),
-                (
-                    "stdout collector enforces configured output byte limit",
-                    "spawn_stream_collector(child.stdout.take(), request.max_output_bytes);",
-                ),
-                (
-                    "stderr collector enforces configured output byte limit",
-                    "spawn_stream_collector(child.stderr.take(), request.max_output_bytes);",
-                ),
-                (
-                    "stream capture derives per-stream capture limit from max_output_bytes",
-                    "let capture_limit = usize::try_from(max_output_bytes).unwrap_or(usize::MAX);",
-                ),
-                (
-                    "capture path marks output as truncated when bytes exceed limit",
-                    "truncated = true;",
-                ),
-                (
-                    "unit test verifies stdout/stderr truncation behavior",
-                    "fn run_truncates_stdout_and_stderr_at_max_output_bytes() {",
-                ),
-            ],
-        )?;
+fn evaluate_ac_07(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/hooks/executor.rs",
+                &[
+                    (
+                        "HookRunRequest carries max_output_bytes safeguard",
+                        "pub max_output_bytes: u64,",
+                    ),
+                    (
+                        "stdout collector enforces configured output byte limit",
+                        "spawn_stream_collector(child.stdout.take(), request.max_output_bytes);",
+                    ),
+                    (
+                        "stderr collector enforces configured output byte limit",
+                        "spawn_stream_collector(child.stderr.take(), request.max_output_bytes);",
+                    ),
+                    (
+                        "stream capture derives per-stream capture limit from max_output_bytes",
+                        "let capture_limit = usize::try_from(max_output_bytes).unwrap_or(usize::MAX);",
+                    ),
+                    (
+                        "capture path marks output as truncated when bytes exceed limit",
+                        "truncated = true;",
+                    ),
+                    (
+                        "unit test verifies stdout/stderr truncation behavior",
+                        "fn run_truncates_stdout_and_stderr_at_max_output_bytes() {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
-fn evaluate_ac_08(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/config.rs",
-            &[
-                (
-                    "HookOnError enum exposes warn policy",
-                    "pub enum HookOnError {",
-                ),
-                (
-                    "warn policy documents continue-on-failure behavior",
-                    "/// Continue orchestration and record warning telemetry.",
-                ),
-                ("warn policy variant exists", "Warn,"),
-                (
-                    "hook validation requires explicit warn|block|suspend policy",
-                    "is required in v1 (warn | block | suspend)",
-                ),
-            ],
-        )?;
+fn evaluate_ac_08(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/config.rs",
+                &[
+                    (
+                        "HookOnError enum exposes warn policy",
+                        "pub enum HookOnError {",
+                    ),
+                    (
+                        "warn policy documents continue-on-failure behavior",
+                        "/// Continue orchestration and record warning telemetry.",
+                    ),
+                    ("warn policy variant exists", "Warn,"),
+                    (
+                        "hook validation requires explicit warn|block|suspend policy",
+                        "is required in v1 (warn | block | suspend)",
+                    ),
+                ],
+            )?;
 
-        assert_workspace_source_contains(
-            "crates/ralph-cli/src/loop_runner.rs",
-            &[
-                (
-                    "warn policy maps to warn disposition",
-                    "HookOnError::Warn => HookDisposition::Warn,",
-                ),
-                (
-                    "warn/non-pass outcomes are logged as continuing",
-                    "\"Lifecycle hook returned non-pass disposition; continuing\"",
-                ),
-                (
-                    "hook dispatch logs telemetry entries with computed disposition",
-                    "event_loop.log_hook_run_telemetry(HookRunTelemetryEntry::from_run_result(",
-                ),
-                (
-                    "lifecycle integration test asserts warn continues across boundary",
-                    "warn disposition should continue across loop.start boundary",
-                ),
-                (
-                    "blocking gate helper allows non-blocking dispositions",
-                    "fn test_fail_if_blocking_loop_start_outcomes_allows_non_blocking_dispositions() {",
-                ),
-            ],
-        )?;
+            assert_workspace_source_contains(
+                "crates/ralph-cli/src/loop_runner.rs",
+                &[
+                    (
+                        "warn policy maps to warn disposition",
+                        "HookOnError::Warn => HookDisposition::Warn,",
+                    ),
+                    (
+                        "warn/non-pass outcomes are logged as continuing",
+                        "\"Lifecycle hook returned non-pass disposition; continuing\"",
+                    ),
+                    (
+                        "hook dispatch logs telemetry entries with computed disposition",
+                        "event_loop.log_hook_run_telemetry(HookRunTelemetryEntry::from_run_result(",
+                    ),
+                    (
+                        "lifecycle integration test asserts warn continues across boundary",
+                        "warn disposition should continue across loop.start boundary",
+                    ),
+                    (
+                        "blocking gate helper allows non-blocking dispositions",
+                        "fn test_fail_if_blocking_loop_start_outcomes_allows_non_blocking_dispositions() {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
-fn evaluate_ac_09(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/config.rs",
-            &[
-                (
-                    "HookOnError enum exposes block policy",
-                    "pub enum HookOnError {",
-                ),
-                (
-                    "block policy documents lifecycle-action failure behavior",
-                    "/// Stop the current lifecycle action as a failure.",
-                ),
-                ("block policy variant exists", "Block,"),
-                (
-                    "hook validation requires explicit warn|block|suspend policy",
-                    "is required in v1 (warn | block | suspend)",
-                ),
-            ],
-        )?;
+fn evaluate_ac_09(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/config.rs",
+                &[
+                    (
+                        "HookOnError enum exposes block policy",
+                        "pub enum HookOnError {",
+                    ),
+                    (
+                        "block policy documents lifecycle-action failure behavior",
+                        "/// Stop the current lifecycle action as a failure.",
+                    ),
+                    ("block policy variant exists", "Block,"),
+                    (
+                        "hook validation requires explicit warn|block|suspend policy",
+                        "is required in v1 (warn | block | suspend)",
+                    ),
+                ],
+            )?;
 
-        assert_workspace_source_contains(
-            "crates/ralph-cli/src/loop_runner.rs",
-            &[
-                (
-                    "block policy maps to block disposition",
-                    "HookOnError::Block => HookDisposition::Block,",
-                ),
-                (
-                    "blocking gate detects block dispositions",
-                    ".find(|outcome| outcome.disposition == HookDisposition::Block)",
-                ),
-                (
-                    "blocking gate fails lifecycle boundary when block is present",
-                    "Err(anyhow::anyhow!(reason))",
-                ),
-                (
-                    "blocking failure reason includes hook, phase-event, and failure detail",
-                    "\"Lifecycle hook '{}' blocked orchestration at '{}': {}\"",
-                ),
-                (
-                    "loop-start integration test asserts block disposition aborts boundary",
-                    "expect_err(\"block disposition should abort loop.start boundary\")",
-                ),
-                (
-                    "failure-context test asserts surfaced block reason",
-                    "expect_err(\"block disposition should fail loop.start boundary\")",
-                ),
-            ],
-        )?;
+            assert_workspace_source_contains(
+                "crates/ralph-cli/src/loop_runner.rs",
+                &[
+                    (
+                        "block policy maps to block disposition",
+                        "HookOnError::Block => HookDisposition::Block,",
+                    ),
+                    (
+                        "blocking gate detects block dispositions",
+                        ".find(|outcome| outcome.disposition == HookDisposition::Block)",
+                    ),
+                    (
+                        "blocking gate fails lifecycle boundary when block is present",
+                        "Err(anyhow::anyhow!(reason))",
+                    ),
+                    (
+                        "blocking failure reason includes hook, phase-event, and failure detail",
+                        "\"Lifecycle hook '{}' blocked orchestration at '{}': {}\"",
+                    ),
+                    (
+                        "loop-start integration test asserts block disposition aborts boundary",
+                        "expect_err(\"block disposition should abort loop.start boundary\")",
+                    ),
+                    (
+                        "failure-context test asserts surfaced block reason",
+                        "expect_err(\"block disposition should fail loop.start boundary\")",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
-fn evaluate_ac_10(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/hooks/suspend_state.rs",
-            &[
-                (
-                    "suspend-state record persists per-hook suspend mode",
-                    "pub suspend_mode: HookSuspendMode,",
-                ),
-                (
-                    "suspend-state constructor marks lifecycle state as suspended",
-                    "state: SuspendLifecycleState::Suspended,",
-                ),
-                (
-                    "suspend-state schema test asserts wait_for_resume serialization",
-                    "assert_eq!(value[\"suspend_mode\"], \"wait_for_resume\");",
-                ),
-                (
-                    "suspend-state store models resume gate as single-use signal artifact",
-                    "/// Consume a single-use resume signal file.",
-                ),
-            ],
-        )?;
+fn evaluate_ac_10(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/hooks/suspend_state.rs",
+                &[
+                    (
+                        "suspend-state record persists per-hook suspend mode",
+                        "pub suspend_mode: HookSuspendMode,",
+                    ),
+                    (
+                        "suspend-state constructor marks lifecycle state as suspended",
+                        "state: SuspendLifecycleState::Suspended,",
+                    ),
+                    (
+                        "suspend-state schema test asserts wait_for_resume serialization",
+                        "assert_eq!(value[\"suspend_mode\"], \"wait_for_resume\");",
+                    ),
+                    (
+                        "suspend-state store models resume gate as single-use signal artifact",
+                        "/// Consume a single-use resume signal file.",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
-fn evaluate_ac_11(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-cli/src/loops.rs",
-            &[
-                ("loops CLI exposes resume subcommand", "Resume(ResumeArgs),"),
-                (
-                    "loops command handler routes resume requests",
-                    "Some(LoopsCommands::Resume(resume_args)) => resume_loop(resume_args),",
-                ),
-                (
-                    "resume command resolves suspend-state store at loop workspace root",
-                    "let suspend_state_store = SuspendStateStore::new(&target_root);",
-                ),
-                (
-                    "resume command reads persisted suspend-state before resuming",
-                    ".read_suspend_state()",
-                ),
-                (
-                    "resume command writes resume-requested signal artifact",
-                    ".write_resume_requested()",
-                ),
-                (
-                    "resume command reports continuation from suspended boundary",
-                    "The loop will continue from the suspended boundary.",
-                ),
-                (
-                    "in-place resume test verifies resume signal creation",
-                    "fn test_resume_loop_writes_resume_signal_for_in_place_loop() {",
-                ),
-                (
-                    "worktree resume test verifies resume targets resolved loop worktree",
-                    "fn test_resume_loop_resolves_partial_id_and_targets_worktree() {",
-                ),
-            ],
-        )?;
+fn evaluate_ac_11(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-cli/src/loops.rs",
+                &[
+                    ("loops CLI exposes resume subcommand", "Resume(ResumeArgs),"),
+                    (
+                        "loops command handler routes resume requests",
+                        "Some(LoopsCommands::Resume(resume_args)) => resume_loop(resume_args),",
+                    ),
+                    (
+                        "resume command resolves suspend-state store at loop workspace root",
+                        "let suspend_state_store = SuspendStateStore::new(&target_root);",
+                    ),
+                    (
+                        "resume command reads persisted suspend-state before resuming",
+                        ".read_suspend_state()",
+                    ),
+                    (
+                        "resume command writes resume-requested signal artifact",
+                        ".write_resume_requested()",
+                    ),
+                    (
+                        "resume command reports continuation from suspended boundary",
+                        "The loop will continue from the suspended boundary.",
+                    ),
+                    (
+                        "in-place resume test verifies resume signal creation",
+                        "fn test_resume_loop_writes_resume_signal_for_in_place_loop() {",
+                    ),
+                    (
+                        "worktree resume test verifies resume targets resolved loop worktree",
+                        "fn test_resume_loop_resolves_partial_id_and_targets_worktree() {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
-fn evaluate_ac_12(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/hooks/suspend_state.rs",
-            &[
-                (
-                    "suspend-state store exposes resume-requested probe",
-                    "pub fn is_resume_requested(&self) -> bool {",
-                ),
-                (
-                    "suspend-state store consumes resume signal via single-use operation",
-                    "pub fn consume_resume_requested(&self) -> Result<bool, SuspendStateStoreError> {",
-                ),
-                (
-                    "resume signal consumption removes resume-requested artifact",
-                    "remove_if_exists(&self.resume_requested_path(), \"consume resume signal\")",
-                ),
-                (
-                    "store unit test verifies resume signal single-use behavior",
-                    "fn test_resume_signal_is_single_use() {",
-                ),
-            ],
-        )?;
+fn evaluate_ac_12(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/hooks/suspend_state.rs",
+                &[
+                    (
+                        "suspend-state store exposes resume-requested probe",
+                        "pub fn is_resume_requested(&self) -> bool {",
+                    ),
+                    (
+                        "suspend-state store consumes resume signal via single-use operation",
+                        "pub fn consume_resume_requested(&self) -> Result<bool, SuspendStateStoreError> {",
+                    ),
+                    (
+                        "resume signal consumption removes resume-requested artifact",
+                        "remove_if_exists(&self.resume_requested_path(), \"consume resume signal\")",
+                    ),
+                    (
+                        "store unit test verifies resume signal single-use behavior",
+                        "fn test_resume_signal_is_single_use() {",
+                    ),
+                ],
+            )?;
 
-        assert_workspace_source_contains(
-            "crates/ralph-cli/src/loops.rs",
-            &[
-                (
-                    "resume command checks for already-requested resume signal",
-                    "let resume_already_requested = suspend_state_store.is_resume_requested();",
-                ),
-                (
-                    "already-requested resume against unsuspended loop returns informative no-op",
-                    "The loop is not currently suspended; no action taken.",
-                ),
-                (
-                    "already-requested resume while suspended returns informative wait message",
-                    "Resume was already requested for loop '{}'. Waiting for the loop to continue.",
-                ),
-                (
-                    "non-suspended loop resume request returns informative no-op",
-                    "Loop '{}' is not currently suspended. Nothing to resume.",
-                ),
-                (
-                    "idempotency regression test covers repeat resume request",
-                    "fn test_resume_loop_is_idempotent_when_resume_already_requested() {",
-                ),
-                (
-                    "non-suspended regression test covers no-op resume path",
-                    "fn test_resume_loop_noops_for_non_suspended_loop() {",
-                ),
-            ],
-        )?;
+            assert_workspace_source_contains(
+                "crates/ralph-cli/src/loops.rs",
+                &[
+                    (
+                        "resume command checks for already-requested resume signal",
+                        "let resume_already_requested = suspend_state_store.is_resume_requested();",
+                    ),
+                    (
+                        "already-requested resume against unsuspended loop returns informative no-op",
+                        "The loop is not currently suspended; no action taken.",
+                    ),
+                    (
+                        "already-requested resume while suspended returns informative wait message",
+                        "Resume was already requested for loop '{}'. Waiting for the loop to continue.",
+                    ),
+                    (
+                        "non-suspended loop resume request returns informative no-op",
+                        "Loop '{}' is not currently suspended. Nothing to resume.",
+                    ),
+                    (
+                        "idempotency regression test covers repeat resume request",
+                        "fn test_resume_loop_is_idempotent_when_resume_already_requested() {",
+                    ),
+                    (
+                        "non-suspended regression test covers no-op resume path",
+                        "fn test_resume_loop_noops_for_non_suspended_loop() {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-13: Mutation opt-in only
 // =============================================================================
 
-fn evaluate_ac_13(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-cli/src/loop_runner.rs",
-            &[
-                (
-                    "mutation parser short-circuits when mutate.enabled is false",
-                    "if !mutate.enabled {",
-                ),
-                (
-                    "disabled mutation path yields explicit disabled parse outcome",
-                    "return HookMutationParseOutcome::Disabled;",
-                ),
-                (
-                    "metadata merge processes only parsed mutation outcomes",
-                    "} = &outcome.mutation_parse_outcome",
-                ),
-                (
-                    "non-parsed mutation outcomes are skipped during metadata merge",
-                    "else {\n            continue;\n        };",
-                ),
-                (
-                    "AC-13 integration test verifies disabled mutations stay inert",
-                    "fn test_ac13_mutation_disabled_json_output_is_inert_for_accumulator_and_downstream_payloads() {",
-                ),
-                (
-                    "AC-13 integration test asserts downstream payload excludes hook_metadata namespace",
-                    "assert!(!payload_accumulated.contains_key(\"hook_metadata\"));",
-                ),
-                (
-                    "unit test verifies parser skips mutation parsing when disabled",
-                    "fn test_parse_hook_mutation_stdout_skips_when_disabled() {",
-                ),
-            ],
-        )?;
+fn evaluate_ac_13(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-cli/src/loop_runner.rs",
+                &[
+                    (
+                        "mutation parser short-circuits when mutate.enabled is false",
+                        "if !mutate.enabled {",
+                    ),
+                    (
+                        "disabled mutation path yields explicit disabled parse outcome",
+                        "return HookMutationParseOutcome::Disabled;",
+                    ),
+                    (
+                        "metadata merge processes only parsed mutation outcomes",
+                        "} = &outcome.mutation_parse_outcome",
+                    ),
+                    (
+                        "non-parsed mutation outcomes are skipped during metadata merge",
+                        "else {\n            continue;\n        };",
+                    ),
+                    (
+                        "AC-13 integration test verifies disabled mutations stay inert",
+                        "fn test_ac13_mutation_disabled_json_output_is_inert_for_accumulator_and_downstream_payloads() {",
+                    ),
+                    (
+                        "AC-13 integration test asserts downstream payload excludes hook_metadata namespace",
+                        "assert!(!payload_accumulated.contains_key(\"hook_metadata\"));",
+                    ),
+                    (
+                        "unit test verifies parser skips mutation parsing when disabled",
+                        "fn test_parse_hook_mutation_stdout_skips_when_disabled() {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-14: Metadata-only mutation surface
 // =============================================================================
 
-fn evaluate_ac_14(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-cli/src/loop_runner.rs",
-            &[
-                (
-                    "mutation payload parser enforces metadata-only top-level schema",
-                    "if payload_object.len() != 1 || !payload_object.contains_key(HOOK_MUTATION_PAYLOAD_METADATA_KEY)",
-                ),
-                (
-                    "schema error message documents metadata-only mutation contract",
-                    "mutation payload supports only '{{\\\"{HOOK_MUTATION_PAYLOAD_METADATA_KEY}\\\": {{...}}}}'; found keys: {keys:?}",
-                ),
-                (
-                    "metadata payload value must be a JSON object",
-                    "message: \"mutation payload key 'metadata' must contain a JSON object\".to_string(),",
-                ),
-                (
-                    "parsed metadata is namespaced under hook_metadata by emitting hook",
-                    "namespace_object.insert(hook_name.to_string(), serde_json::Value::Object(metadata));",
-                ),
-                (
-                    "AC-14 integration test validates metadata-only downstream mutation behavior",
-                    "fn test_ac14_mutation_enabled_updates_only_namespaced_metadata_in_downstream_payloads() {",
-                ),
-                (
-                    "AC-14 integration test guards mutation surface from prompt field injection",
-                    "assert!(!payload_object.contains_key(\"prompt\"));",
-                ),
-                (
-                    "AC-14 integration test guards mutation surface from events field injection",
-                    "assert!(!payload_object.contains_key(\"events\"));",
-                ),
-                (
-                    "unit test rejects payloads that include non-metadata keys",
-                    "fn test_parse_hook_mutation_stdout_rejects_non_metadata_payload_shape() {",
-                ),
-            ],
-        )?;
+fn evaluate_ac_14(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-cli/src/loop_runner.rs",
+                &[
+                    (
+                        "mutation payload parser enforces metadata-only top-level schema",
+                        "if payload_object.len() != 1 || !payload_object.contains_key(HOOK_MUTATION_PAYLOAD_METADATA_KEY)",
+                    ),
+                    (
+                        "schema error message documents metadata-only mutation contract",
+                        "mutation payload supports only '{{\\\"{HOOK_MUTATION_PAYLOAD_METADATA_KEY}\\\": {{...}}}}'; found keys: {keys:?}",
+                    ),
+                    (
+                        "metadata payload value must be a JSON object",
+                        "message: \"mutation payload key 'metadata' must contain a JSON object\".to_string(),",
+                    ),
+                    (
+                        "parsed metadata is namespaced under hook_metadata by emitting hook",
+                        "namespace_object.insert(hook_name.to_string(), serde_json::Value::Object(metadata));",
+                    ),
+                    (
+                        "AC-14 integration test validates metadata-only downstream mutation behavior",
+                        "fn test_ac14_mutation_enabled_updates_only_namespaced_metadata_in_downstream_payloads() {",
+                    ),
+                    (
+                        "AC-14 integration test guards mutation surface from prompt field injection",
+                        "assert!(!payload_object.contains_key(\"prompt\"));",
+                    ),
+                    (
+                        "AC-14 integration test guards mutation surface from events field injection",
+                        "assert!(!payload_object.contains_key(\"events\"));",
+                    ),
+                    (
+                        "unit test rejects payloads that include non-metadata keys",
+                        "fn test_parse_hook_mutation_stdout_rejects_non_metadata_payload_shape() {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-15: JSON-only mutation format
 // =============================================================================
 
-fn evaluate_ac_15(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-cli/src/loop_runner.rs",
-            &[
-                (
-                    "mutation parser attempts JSON decode of hook stdout",
-                    "let parsed = match serde_json::from_str::<serde_json::Value>(stdout.trim()) {",
-                ),
-                (
-                    "non-JSON mutation output maps to invalid-json parse outcome",
-                    "return HookMutationParseOutcome::Invalid(HookMutationParseError::InvalidJson {",
-                ),
-                (
-                    "invalid-json failure message is surfaced with parse error context",
-                    "message: format!(\"mutation stdout is not valid JSON: {error}\"),",
-                ),
-                (
-                    "invalid mutation parse outcomes are converted into dispatch failures",
-                    "Some(HookDispatchFailure::InvalidMutationOutput {",
-                ),
-                (
-                    "mutation parse failures are dispositioned via on_error policy",
-                    "let disposition = if mutation_failure.is_some() {",
-                ),
-                (
-                    "mutation parse failure branch maps through disposition_from_on_error",
-                    "disposition_from_on_error(on_error)",
-                ),
-                (
-                    "unit test verifies parser rejects non-JSON mutation stdout",
-                    "fn test_parse_hook_mutation_stdout_rejects_non_json_payload_when_enabled() {",
-                ),
-                (
-                    "AC-15 warn-path test verifies non-JSON mutation remains non-blocking",
-                    "fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_warn_continues_through_block_gate() {",
-                ),
-                (
-                    "AC-15 block-path test verifies non-JSON mutation surfaces blocking reason",
-                    "fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_block_surfaces_invalid_output_reason()",
-                ),
-                (
-                    "AC-15 suspend-path test verifies non-JSON mutation enters wait_for_resume gate",
-                    "fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_suspend_uses_wait_for_resume_gate() {",
-                ),
-            ],
-        )?;
+fn evaluate_ac_15(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-cli/src/loop_runner.rs",
+                &[
+                    (
+                        "mutation parser attempts JSON decode of hook stdout",
+                        "let parsed = match serde_json::from_str::<serde_json::Value>(stdout.trim()) {",
+                    ),
+                    (
+                        "non-JSON mutation output maps to invalid-json parse outcome",
+                        "return HookMutationParseOutcome::Invalid(HookMutationParseError::InvalidJson {",
+                    ),
+                    (
+                        "invalid-json failure message is surfaced with parse error context",
+                        "message: format!(\"mutation stdout is not valid JSON: {error}\"),",
+                    ),
+                    (
+                        "invalid mutation parse outcomes are converted into dispatch failures",
+                        "Some(HookDispatchFailure::InvalidMutationOutput {",
+                    ),
+                    (
+                        "mutation parse failures are dispositioned via on_error policy",
+                        "let disposition = if mutation_failure.is_some() {",
+                    ),
+                    (
+                        "mutation parse failure branch maps through disposition_from_on_error",
+                        "disposition_from_on_error(on_error)",
+                    ),
+                    (
+                        "unit test verifies parser rejects non-JSON mutation stdout",
+                        "fn test_parse_hook_mutation_stdout_rejects_non_json_payload_when_enabled() {",
+                    ),
+                    (
+                        "AC-15 warn-path test verifies non-JSON mutation remains non-blocking",
+                        "fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_warn_continues_through_block_gate() {",
+                    ),
+                    (
+                        "AC-15 block-path test verifies non-JSON mutation surfaces blocking reason",
+                        "fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_block_surfaces_invalid_output_reason()",
+                    ),
+                    (
+                        "AC-15 suspend-path test verifies non-JSON mutation enters wait_for_resume gate",
+                        "fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_suspend_uses_wait_for_resume_gate() {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-16: Hook telemetry completeness
 // =============================================================================
 
-fn evaluate_ac_16(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/diagnostics/hook_runs.rs",
-            &[
-                (
-                    "telemetry schema defines structured hook-run entry",
-                    "pub struct HookRunTelemetryEntry {",
-                ),
-                (
-                    "telemetry captures canonical phase-event key",
-                    "pub phase_event: String,",
-                ),
-                ("telemetry captures hook name", "pub hook_name: String,"),
-                (
-                    "telemetry captures lifecycle timing bounds",
-                    "pub started_at: DateTime<Utc>,",
-                ),
-                (
-                    "telemetry captures duration in milliseconds",
-                    "pub duration_ms: u64,",
-                ),
-                (
-                    "telemetry captures process exit code",
-                    "pub exit_code: Option<i32>,",
-                ),
-                (
-                    "telemetry captures timeout indicator",
-                    "pub timed_out: bool,",
-                ),
-                (
-                    "telemetry captures stdout payload with truncation metadata",
-                    "pub stdout: HookStreamOutput,",
-                ),
-                (
-                    "telemetry captures stderr payload with truncation metadata",
-                    "pub stderr: HookStreamOutput,",
-                ),
-                (
-                    "telemetry captures final disposition",
-                    "pub disposition: HookDisposition,",
-                ),
-                (
-                    "telemetry captures suspend mode used for failures",
-                    "pub suspend_mode: HookSuspendMode,",
-                ),
-                (
-                    "telemetry captures retry attempt index",
-                    "pub retry_attempt: u32,",
-                ),
-                (
-                    "telemetry captures retry attempt ceiling",
-                    "pub retry_max_attempts: u32,",
-                ),
-                (
-                    "telemetry builder maps executor output into entry",
-                    "pub fn from_run_result(",
-                ),
-                (
-                    "hook-run logger writes to hook-runs diagnostics file",
-                    "let log_file = session_dir.join(\"hook-runs.jsonl\");",
-                ),
-                (
-                    "hook-run logger serializes telemetry entries as JSON",
-                    "serde_json::to_writer(&mut self.writer, entry)?;",
-                ),
-                (
-                    "hook-run logger uses newline-delimited records",
-                    "self.writer.write_all(b\"\\n\")?;",
-                ),
-                (
-                    "telemetry unit test verifies required serialized fields",
-                    "fn telemetry_entry_serializes_required_fields() {",
-                ),
-            ],
-        )?;
+fn evaluate_ac_16(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/diagnostics/hook_runs.rs",
+                &[
+                    (
+                        "telemetry schema defines structured hook-run entry",
+                        "pub struct HookRunTelemetryEntry {",
+                    ),
+                    (
+                        "telemetry captures canonical phase-event key",
+                        "pub phase_event: String,",
+                    ),
+                    ("telemetry captures hook name", "pub hook_name: String,"),
+                    (
+                        "telemetry captures lifecycle timing bounds",
+                        "pub started_at: DateTime<Utc>,",
+                    ),
+                    (
+                        "telemetry captures duration in milliseconds",
+                        "pub duration_ms: u64,",
+                    ),
+                    (
+                        "telemetry captures process exit code",
+                        "pub exit_code: Option<i32>,",
+                    ),
+                    (
+                        "telemetry captures timeout indicator",
+                        "pub timed_out: bool,",
+                    ),
+                    (
+                        "telemetry captures stdout payload with truncation metadata",
+                        "pub stdout: HookStreamOutput,",
+                    ),
+                    (
+                        "telemetry captures stderr payload with truncation metadata",
+                        "pub stderr: HookStreamOutput,",
+                    ),
+                    (
+                        "telemetry captures final disposition",
+                        "pub disposition: HookDisposition,",
+                    ),
+                    (
+                        "telemetry captures suspend mode used for failures",
+                        "pub suspend_mode: HookSuspendMode,",
+                    ),
+                    (
+                        "telemetry captures retry attempt index",
+                        "pub retry_attempt: u32,",
+                    ),
+                    (
+                        "telemetry captures retry attempt ceiling",
+                        "pub retry_max_attempts: u32,",
+                    ),
+                    (
+                        "telemetry builder maps executor output into entry",
+                        "pub fn from_run_result(",
+                    ),
+                    (
+                        "hook-run logger writes to hook-runs diagnostics file",
+                        "let log_file = session_dir.join(\"hook-runs.jsonl\");",
+                    ),
+                    (
+                        "hook-run logger serializes telemetry entries as JSON",
+                        "serde_json::to_writer(&mut self.writer, entry)?;",
+                    ),
+                    (
+                        "hook-run logger uses newline-delimited records",
+                        "self.writer.write_all(b\"\\n\")?;",
+                    ),
+                    (
+                        "telemetry unit test verifies required serialized fields",
+                        "fn telemetry_entry_serializes_required_fields() {",
+                    ),
+                ],
+            )?;
 
-        assert_workspace_source_contains(
-            "crates/ralph-cli/src/loop_runner.rs",
-            &[
-                (
-                    "loop runner emits hook-run telemetry after each attempt",
-                    "event_loop.log_hook_run_telemetry(HookRunTelemetryEntry::from_run_result(",
-                ),
-                (
-                    "telemetry emission includes canonical phase-event key",
-                    "phase_event_key,",
-                ),
-                ("telemetry emission includes hook identifier", "hook_name,"),
-                (
-                    "telemetry emission includes computed disposition",
-                    "disposition,",
-                ),
-                ("telemetry emission includes suspend mode", "suspend_mode,"),
-                (
-                    "telemetry emission includes retry attempt",
-                    "retry_attempt,",
-                ),
-                (
-                    "telemetry emission includes retry ceiling",
-                    "retry_max_attempts,",
-                ),
-                (
-                    "telemetry emission includes executor run result",
-                    "&run_result,",
-                ),
-                (
-                    "retry-backoff integration test asserts telemetry row count",
-                    "assert_eq!(telemetry_entries.len(), 3);",
-                ),
-                (
-                    "wait-then-retry integration test asserts telemetry row count",
-                    "assert_eq!(telemetry_entries.len(), 2);",
-                ),
-            ],
-        )?;
+            assert_workspace_source_contains(
+                "crates/ralph-cli/src/loop_runner.rs",
+                &[
+                    (
+                        "loop runner emits hook-run telemetry after each attempt",
+                        "event_loop.log_hook_run_telemetry(HookRunTelemetryEntry::from_run_result(",
+                    ),
+                    (
+                        "telemetry emission includes canonical phase-event key",
+                        "phase_event_key,",
+                    ),
+                    ("telemetry emission includes hook identifier", "hook_name,"),
+                    (
+                        "telemetry emission includes computed disposition",
+                        "disposition,",
+                    ),
+                    ("telemetry emission includes suspend mode", "suspend_mode,"),
+                    (
+                        "telemetry emission includes retry attempt",
+                        "retry_attempt,",
+                    ),
+                    (
+                        "telemetry emission includes retry ceiling",
+                        "retry_max_attempts,",
+                    ),
+                    (
+                        "telemetry emission includes executor run result",
+                        "&run_result,",
+                    ),
+                    (
+                        "retry-backoff integration test asserts telemetry row count",
+                        "assert_eq!(telemetry_entries.len(), 3);",
+                    ),
+                    (
+                        "wait-then-retry integration test asserts telemetry row count",
+                        "assert_eq!(telemetry_entries.len(), 2);",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-17: Validation command
 // =============================================================================
 
-fn evaluate_ac_17(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-cli/src/hooks.rs",
-            &[
-                (
-                    "hooks namespace defines validate subcommand",
-                    "Validate(ValidateArgs),",
-                ),
-                (
-                    "hooks validate supports machine-readable format selection",
-                    "pub enum HooksValidateFormat {",
-                ),
-                ("hooks validate includes human format", "Human,"),
-                ("hooks validate includes json format", "Json,"),
-                (
-                    "hooks validate defaults --format to human",
-                    "#[arg(long, value_enum, default_value_t = HooksValidateFormat::Human)]",
-                ),
-                (
-                    "hooks command execution routes validate subcommand",
-                    "HooksCommands::Validate(validate_args) => {",
-                ),
-                (
-                    "validate subcommand delegates to execute_validate implementation",
-                    "execute_validate(config_sources, hats_source, validate_args, use_colors).await",
-                ),
-                (
-                    "validate command loads a structured report from current config sources",
-                    "let report = build_report(config_sources, hats_source).await;",
-                ),
-                (
-                    "json mode renders report as pretty-printed JSON",
-                    "serde_json::to_string_pretty(&report)?",
-                ),
-                (
-                    "human mode renders report with human formatter",
-                    "print_human_report(&report, use_colors);",
-                ),
-                (
-                    "validate command exits non-zero when report fails",
-                    "std::process::exit(1);",
-                ),
-                (
-                    "report builder runs semantic config validation",
-                    "if let Err(error) = config.validate() {",
-                ),
-                (
-                    "semantic validation failure is captured as hooks diagnostic",
-                    "report.push_diagnostic(\"hooks.semantic\", error.to_string(), None, None, None);",
-                ),
-                (
-                    "report builder includes duplicate hook-name validation",
-                    "validate_duplicate_names(&config, &mut report);",
-                ),
-                (
-                    "report builder includes command resolvability validation",
-                    "validate_command_resolvability(&config, &mut report);",
-                ),
-            ],
-        )?;
+fn evaluate_ac_17(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-cli/src/hooks.rs",
+                &[
+                    (
+                        "hooks namespace defines validate subcommand",
+                        "Validate(ValidateArgs),",
+                    ),
+                    (
+                        "hooks validate supports machine-readable format selection",
+                        "pub enum HooksValidateFormat {",
+                    ),
+                    ("hooks validate includes human format", "Human,"),
+                    ("hooks validate includes json format", "Json,"),
+                    (
+                        "hooks validate defaults --format to human",
+                        "#[arg(long, value_enum, default_value_t = HooksValidateFormat::Human)]",
+                    ),
+                    (
+                        "hooks command execution routes validate subcommand",
+                        "HooksCommands::Validate(validate_args) => {",
+                    ),
+                    (
+                        "validate subcommand delegates to execute_validate implementation",
+                        "execute_validate(config_sources, hats_source, validate_args, use_colors).await",
+                    ),
+                    (
+                        "validate command loads a structured report from current config sources",
+                        "let report = build_report(config_sources, hats_source).await;",
+                    ),
+                    (
+                        "json mode renders report as pretty-printed JSON",
+                        "serde_json::to_string_pretty(&report)?",
+                    ),
+                    (
+                        "human mode renders report with human formatter",
+                        "print_human_report(&report, use_colors);",
+                    ),
+                    (
+                        "validate command exits non-zero when report fails",
+                        "std::process::exit(1);",
+                    ),
+                    (
+                        "report builder runs semantic config validation",
+                        "if let Err(error) = config.validate() {",
+                    ),
+                    (
+                        "semantic validation failure is captured as hooks diagnostic",
+                        "report.push_diagnostic(\"hooks.semantic\", error.to_string(), None, None, None);",
+                    ),
+                    (
+                        "report builder includes duplicate hook-name validation",
+                        "validate_duplicate_names(&config, &mut report);",
+                    ),
+                    (
+                        "report builder includes command resolvability validation",
+                        "validate_command_resolvability(&config, &mut report);",
+                    ),
+                ],
+            )?;
 
-        assert_workspace_source_contains(
-            "crates/ralph-cli/src/main.rs",
-            &[
-                (
-                    "top-level CLI command enum registers hooks namespace",
-                    "Hooks(hooks::HooksArgs),",
-                ),
-                (
-                    "main command dispatcher routes hooks invocations",
-                    "Some(Commands::Hooks(args)) => {",
-                ),
-                (
-                    "hooks dispatcher invokes hooks::execute handler",
-                    "hooks::execute(",
-                ),
-                (
-                    "hooks dispatcher forwards color preference to validation output",
-                    "cli.color.should_use_colors(),",
-                ),
-            ],
-        )?;
+            assert_workspace_source_contains(
+                "crates/ralph-cli/src/main.rs",
+                &[
+                    (
+                        "top-level CLI command enum registers hooks namespace",
+                        "Hooks(hooks::HooksArgs),",
+                    ),
+                    (
+                        "main command dispatcher routes hooks invocations",
+                        "Some(Commands::Hooks(args)) => {",
+                    ),
+                    (
+                        "hooks dispatcher invokes hooks::execute handler",
+                        "hooks::execute(",
+                    ),
+                    (
+                        "hooks dispatcher forwards color preference to validation output",
+                        "cli.color.should_use_colors(),",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 // =============================================================================
 // AC-18: Preflight integration
 // =============================================================================
 
-fn evaluate_ac_18(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
-    evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        assert_workspace_source_contains(
-            "crates/ralph-core/src/preflight.rs",
-            &[
-                (
-                    "preflight default checks register hooks validation check",
-                    "Box::new(HooksValidationCheck),",
-                ),
-                (
-                    "hooks preflight check type exists",
-                    "struct HooksValidationCheck;",
-                ),
-                (
-                    "hooks preflight check is named hooks for skip-list integration",
-                    "\"hooks\"",
-                ),
-                (
-                    "hooks preflight check skips when hooks are disabled",
-                    "if !config.hooks.enabled {",
-                ),
-                (
-                    "disabled hooks preflight result is a passing skip status",
-                    "return CheckResult::pass(self.name(), \"Hooks disabled (skipping)\");",
-                ),
-                (
-                    "hooks preflight check validates duplicate names",
-                    "validate_hook_duplicate_names(config, &mut diagnostics);",
-                ),
-                (
-                    "hooks preflight check validates command resolvability",
-                    "validate_hook_command_resolvability(config, &mut diagnostics);",
-                ),
-                (
-                    "hooks preflight check reports pass label with checked hook count",
-                    "\"Hooks validation passed ({} hook(s))\"",
-                ),
-                (
-                    "hooks preflight check reports failing diagnostics count",
-                    "\"Hooks validation failed ({} issue(s))\"",
-                ),
-                (
-                    "unit test verifies hooks check registration in default preflight set",
-                    "fn default_checks_include_hooks_check_name() {",
-                ),
-                (
-                    "unit test verifies hooks check skip behavior when disabled",
-                    "async fn hooks_check_skips_when_hooks_are_disabled() {",
-                ),
-                (
-                    "unit test verifies hooks check emits actionable failures",
-                    "async fn hooks_check_fails_with_actionable_duplicate_and_command_diagnostics() {",
-                ),
-                (
-                    "unit test verifies selected preflight checks can omit hooks failures",
-                    "async fn run_selected_can_skip_hooks_check_failures() {",
-                ),
-            ],
-        )?;
+fn evaluate_ac_18(
+    scenario: &HooksBddScenario,
+    harness: &mut HooksBddIntegrationHarness,
+    ci_safe_mode: bool,
+) -> HooksBddScenarioResult {
+    evaluate_green_acceptance(
+        scenario,
+        harness,
+        ci_safe_mode,
+        validate_acceptance_context,
+        |_harness| {
+            assert_workspace_source_contains(
+                "crates/ralph-core/src/preflight.rs",
+                &[
+                    (
+                        "preflight default checks register hooks validation check",
+                        "Box::new(HooksValidationCheck),",
+                    ),
+                    (
+                        "hooks preflight check type exists",
+                        "struct HooksValidationCheck;",
+                    ),
+                    (
+                        "hooks preflight check is named hooks for skip-list integration",
+                        "\"hooks\"",
+                    ),
+                    (
+                        "hooks preflight check skips when hooks are disabled",
+                        "if !config.hooks.enabled {",
+                    ),
+                    (
+                        "disabled hooks preflight result is a passing skip status",
+                        "return CheckResult::pass(self.name(), \"Hooks disabled (skipping)\");",
+                    ),
+                    (
+                        "hooks preflight check validates duplicate names",
+                        "validate_hook_duplicate_names(config, &mut diagnostics);",
+                    ),
+                    (
+                        "hooks preflight check validates command resolvability",
+                        "validate_hook_command_resolvability(config, &mut diagnostics);",
+                    ),
+                    (
+                        "hooks preflight check reports pass label with checked hook count",
+                        "\"Hooks validation passed ({} hook(s))\"",
+                    ),
+                    (
+                        "hooks preflight check reports failing diagnostics count",
+                        "\"Hooks validation failed ({} issue(s))\"",
+                    ),
+                    (
+                        "unit test verifies hooks check registration in default preflight set",
+                        "fn default_checks_include_hooks_check_name() {",
+                    ),
+                    (
+                        "unit test verifies hooks check skip behavior when disabled",
+                        "async fn hooks_check_skips_when_hooks_are_disabled() {",
+                    ),
+                    (
+                        "unit test verifies hooks check emits actionable failures",
+                        "async fn hooks_check_fails_with_actionable_duplicate_and_command_diagnostics() {",
+                    ),
+                    (
+                        "unit test verifies selected preflight checks can omit hooks failures",
+                        "async fn run_selected_can_skip_hooks_check_failures() {",
+                    ),
+                ],
+            )?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 fn hooks_feature_dir() -> Result<PathBuf, HooksBddError> {
@@ -1669,8 +2004,13 @@ mod tests {
             steps: vec![],
         };
 
-        let result =
-            evaluate_green_acceptance(&scenario, true, validate_acceptance_context, || {
+        let mut harness = HooksBddIntegrationHarness::new(&scenario, true);
+        let result = evaluate_green_acceptance(
+            &scenario,
+            &mut harness,
+            true,
+            validate_acceptance_context,
+            |_harness| {
                 assert_required_source_snippets(
                     "crates/ralph-core/src/config.rs",
                     "pub hooks: HooksConfig,\n",
@@ -1679,7 +2019,8 @@ mod tests {
                         "hooks: HooksConfig::default(),",
                     )],
                 )
-            });
+            },
+        );
 
         assert!(!result.passed);
         assert_eq!(result.scenario_id, "AC-01");
@@ -1883,7 +2224,8 @@ mod tests {
             steps: vec![],
         };
 
-        let result = eval_fn(&scenario, true);
+        let mut harness = HooksBddIntegrationHarness::new(&scenario, true);
+        let result = eval_fn(&scenario, &mut harness, true);
 
         // AC-99 should fail with "no evaluator implemented" message
         assert!(!result.passed);
@@ -1971,12 +2313,19 @@ Feature: Example
             steps: vec![],
         };
 
-        let result_01 = ac01_eval(&scenario_ac01, true);
-        let result_02 = ac01_eval(&scenario_ac02, true);
-        let result_03 = ac01_eval(&scenario_ac03, true);
-        let result_04 = ac04_eval(&scenario_ac04, true);
-        let result_07 = ac07_eval(&scenario_ac07, true);
-        let result_99 = unknown_eval(&scenario_ac99, true);
+        let mut harness_01 = HooksBddIntegrationHarness::new(&scenario_ac01, true);
+        let mut harness_02 = HooksBddIntegrationHarness::new(&scenario_ac02, true);
+        let mut harness_03 = HooksBddIntegrationHarness::new(&scenario_ac03, true);
+        let mut harness_04 = HooksBddIntegrationHarness::new(&scenario_ac04, true);
+        let mut harness_07 = HooksBddIntegrationHarness::new(&scenario_ac07, true);
+        let mut harness_99 = HooksBddIntegrationHarness::new(&scenario_ac99, true);
+
+        let result_01 = ac01_eval(&scenario_ac01, &mut harness_01, true);
+        let result_02 = ac01_eval(&scenario_ac02, &mut harness_02, true);
+        let result_03 = ac01_eval(&scenario_ac03, &mut harness_03, true);
+        let result_04 = ac04_eval(&scenario_ac04, &mut harness_04, true);
+        let result_07 = ac07_eval(&scenario_ac07, &mut harness_07, true);
+        let result_99 = unknown_eval(&scenario_ac99, &mut harness_99, true);
 
         // AC-01, AC-02, AC-03, AC-04, AC-05, AC-06, AC-07 are green (all implemented)
         assert!(result_01.passed);

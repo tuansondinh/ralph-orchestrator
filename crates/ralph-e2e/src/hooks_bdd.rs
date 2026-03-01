@@ -5,9 +5,12 @@
 //! - placeholder step-definition matching
 //! - deterministic CI-safe execution path
 
-use crate::executor::find_workspace_root;
+use crate::executor::{find_workspace_root, resolve_ralph_binary};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 const HOOKS_FEATURE_DIR_WORKSPACE: &str = "crates/ralph-e2e/features/hooks";
@@ -196,6 +199,248 @@ impl HooksBddIntegrationHarness {
         next_index - 1
     }
 
+    /// Creates a deterministic temporary workspace for a hooks BDD scenario run.
+    pub fn prepare_temp_workspace(&self, workspace_name: &str) -> Result<PathBuf, String> {
+        let workspace_parent = self.artifacts.root_dir.join("workspace");
+        fs::create_dir_all(&workspace_parent).map_err(|source| {
+            format!(
+                "{}: failed to create workspace parent {}: {source}",
+                self.scenario_id,
+                workspace_parent.display()
+            )
+        })?;
+
+        let workspace_dir = workspace_parent.join(slugify_path_segment(workspace_name));
+        if workspace_dir.exists() {
+            fs::remove_dir_all(&workspace_dir).map_err(|source| {
+                format!(
+                    "{}: failed to reset workspace {}: {source}",
+                    self.scenario_id,
+                    workspace_dir.display()
+                )
+            })?;
+        }
+
+        fs::create_dir_all(workspace_dir.join(".ralph/agent")).map_err(|source| {
+            format!(
+                "{}: failed to create workspace {}: {source}",
+                self.scenario_id,
+                workspace_dir.display()
+            )
+        })?;
+
+        Ok(workspace_dir)
+    }
+
+    /// Writes a workspace-relative file, creating parent directories as needed.
+    pub fn write_workspace_file(
+        &self,
+        workspace_dir: &Path,
+        relative_path: &str,
+        content: &str,
+    ) -> Result<PathBuf, String> {
+        let relative = Path::new(relative_path);
+        if relative.is_absolute() {
+            return Err(format!(
+                "{}: workspace file path must be relative: {}",
+                self.scenario_id, relative_path
+            ));
+        }
+
+        let target_path = workspace_dir.join(relative);
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent).map_err(|source| {
+                format!(
+                    "{}: failed to create parent dir {}: {source}",
+                    self.scenario_id,
+                    parent.display()
+                )
+            })?;
+        }
+
+        fs::write(&target_path, content).map_err(|source| {
+            format!(
+                "{}: failed to write workspace file {}: {source}",
+                self.scenario_id,
+                target_path.display()
+            )
+        })?;
+
+        Ok(target_path)
+    }
+
+    /// Creates an executable hook script under `<workspace>/hooks/`.
+    pub fn write_hook_script(
+        &self,
+        workspace_dir: &Path,
+        script_name: &str,
+        script_body: &str,
+    ) -> Result<PathBuf, String> {
+        let script_file_name = format!("{}.sh", slugify_path_segment(script_name));
+        let script_relative_path = format!("hooks/{script_file_name}");
+        let script_content = normalize_hook_script_content(script_body);
+        let script_path =
+            self.write_workspace_file(workspace_dir, &script_relative_path, &script_content)?;
+
+        mark_file_executable(&script_path).map_err(|source| {
+            format!(
+                "{}: failed to mark hook script executable {}: {source}",
+                self.scenario_id,
+                script_path.display()
+            )
+        })?;
+
+        Ok(script_path)
+    }
+
+    /// Runs `ralph` with a bounded timeout and writes stdout/stderr to run artifacts.
+    pub fn run_bounded_ralph_command(
+        &mut self,
+        artifact_name: impl Into<String>,
+        workspace_dir: &Path,
+        args: &[&str],
+        timeout: Duration,
+    ) -> Result<HooksBddRunArtifact, String> {
+        if !workspace_dir.is_dir() {
+            return Err(format!(
+                "{}: workspace directory does not exist: {}",
+                self.scenario_id,
+                workspace_dir.display()
+            ));
+        }
+
+        let ralph_binary = resolve_ralph_binary();
+        let command_preview = format_command_preview(
+            ralph_binary.as_os_str(),
+            args.iter().copied().map(OsStr::new),
+        );
+        let artifact_index = self.scaffold_run_artifact(artifact_name, command_preview);
+
+        let (stdout_path, stderr_path) = {
+            let artifact = self
+                .artifacts
+                .run_artifacts
+                .get_mut(artifact_index)
+                .ok_or_else(|| {
+                    format!(
+                        "{}: internal error: missing run artifact at index {}",
+                        self.scenario_id, artifact_index
+                    )
+                })?;
+
+            artifact.working_dir = workspace_dir.to_path_buf();
+            (artifact.stdout_path.clone(), artifact.stderr_path.clone())
+        };
+
+        if let Some(parent) = stdout_path.parent() {
+            fs::create_dir_all(parent).map_err(|source| {
+                format!(
+                    "{}: failed to create stdout artifact dir {}: {source}",
+                    self.scenario_id,
+                    parent.display()
+                )
+            })?;
+        }
+
+        if let Some(parent) = stderr_path.parent() {
+            fs::create_dir_all(parent).map_err(|source| {
+                format!(
+                    "{}: failed to create stderr artifact dir {}: {source}",
+                    self.scenario_id,
+                    parent.display()
+                )
+            })?;
+        }
+
+        let stdout_file = fs::File::create(&stdout_path).map_err(|source| {
+            format!(
+                "{}: failed to create stdout artifact {}: {source}",
+                self.scenario_id,
+                stdout_path.display()
+            )
+        })?;
+        let stderr_file = fs::File::create(&stderr_path).map_err(|source| {
+            format!(
+                "{}: failed to create stderr artifact {}: {source}",
+                self.scenario_id,
+                stderr_path.display()
+            )
+        })?;
+
+        let mut command = Command::new(&ralph_binary);
+        command
+            .args(args)
+            .current_dir(workspace_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file));
+
+        let mut child = command.spawn().map_err(|source| {
+            format!(
+                "{}: failed to spawn command `{}` in {}: {source}",
+                self.scenario_id,
+                self.artifacts.run_artifacts[artifact_index].command,
+                workspace_dir.display()
+            )
+        })?;
+
+        let poll_interval = Duration::from_millis(20);
+        let start = Instant::now();
+        let mut timed_out = false;
+
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    if start.elapsed() >= timeout {
+                        timed_out = true;
+                        if let Err(source) = child.kill()
+                            && source.kind() != std::io::ErrorKind::InvalidInput
+                        {
+                            return Err(format!(
+                                "{}: failed to terminate timed out command `{}`: {source}",
+                                self.scenario_id,
+                                self.artifacts.run_artifacts[artifact_index].command
+                            ));
+                        }
+
+                        break child.wait().map_err(|source| {
+                            format!(
+                                "{}: failed waiting for timed out command `{}`: {source}",
+                                self.scenario_id,
+                                self.artifacts.run_artifacts[artifact_index].command
+                            )
+                        })?;
+                    }
+
+                    std::thread::sleep(poll_interval);
+                }
+                Err(source) => {
+                    return Err(format!(
+                        "{}: failed while polling command `{}`: {source}",
+                        self.scenario_id, self.artifacts.run_artifacts[artifact_index].command
+                    ));
+                }
+            }
+        };
+
+        if let Some(artifact) = self.artifacts.run_artifacts.get_mut(artifact_index) {
+            artifact.exit_code = status.code();
+            artifact.timed_out = timed_out;
+        }
+
+        self.artifacts
+            .run_artifacts
+            .get(artifact_index)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "{}: internal error: run artifact missing after command execution",
+                    self.scenario_id
+                )
+            })
+    }
+
     /// Consumes the harness and returns captured artifact metadata.
     pub fn into_artifacts(self) -> HooksBddScenarioArtifacts {
         self.artifacts
@@ -289,6 +534,40 @@ fn slugify_path_segment(value: &str) -> String {
     } else {
         slug.to_string()
     }
+}
+
+fn normalize_hook_script_content(script_body: &str) -> String {
+    let trimmed = script_body.trim();
+    if trimmed.starts_with("#!") {
+        format!("{trimmed}\n")
+    } else {
+        format!("#!/usr/bin/env bash\nset -euo pipefail\n{trimmed}\n")
+    }
+}
+
+fn format_command_preview<'a>(binary: &OsStr, args: impl Iterator<Item = &'a OsStr>) -> String {
+    let mut parts = Vec::new();
+    parts.push(binary.to_string_lossy().to_string());
+
+    for arg in args {
+        parts.push(arg.to_string_lossy().to_string());
+    }
+
+    parts.join(" ")
+}
+
+#[cfg(unix)]
+fn mark_file_executable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(not(unix))]
+fn mark_file_executable(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Discovers hook BDD scenarios from `features/hooks/*.feature`.

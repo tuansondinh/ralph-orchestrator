@@ -30,6 +30,8 @@ use tracing::{debug, info, warn};
 pub struct ProcessedEvents {
     /// Whether any valid events were found and published.
     pub had_events: bool,
+    /// Whether any published events matched the semantic `plan.*` topic family.
+    pub had_plan_events: bool,
     /// Whether any events lacked specific hat subscribers (orphans handled by Ralph).
     pub has_orphans: bool,
 }
@@ -633,6 +635,18 @@ impl EventLoop {
     /// want to artificially delay the response to a human interaction.
     pub fn has_pending_human_events(&self) -> bool {
         self.bus.has_human_pending()
+    }
+
+    /// Returns whether unread JSONL events include any semantic `plan.*` topics.
+    ///
+    /// This allows callers to dispatch `pre.plan.created` hooks before
+    /// event publication handling without consuming unread events.
+    pub fn has_pending_plan_events_in_jsonl(&self) -> std::io::Result<bool> {
+        let result = self.event_reader.peek_new_events()?;
+        Ok(result
+            .events
+            .iter()
+            .any(|event| event.topic.starts_with("plan.")))
     }
 
     /// Gets the topics a hat is allowed to publish.
@@ -1652,8 +1666,9 @@ impl EventLoop {
     /// 2. Tracking consecutive failures for termination check
     /// 3. Resetting counter when valid events are parsed
     ///
-    /// Returns [`ProcessedEvents`] indicating whether events were found and whether
-    /// any were orphans that Ralph should handle.
+    /// Returns [`ProcessedEvents`] indicating whether events were found, whether
+    /// semantic `plan.*` topics were published, and whether any were orphans
+    /// that Ralph should handle.
     pub fn process_events_from_jsonl(&mut self) -> std::io::Result<ProcessedEvents> {
         let result = self.event_reader.read_new_events()?;
 
@@ -1681,6 +1696,7 @@ impl EventLoop {
         if result.events.is_empty() && result.malformed.is_empty() {
             return Ok(ProcessedEvents {
                 had_events: false,
+                had_plan_events: false,
                 has_orphans: false,
             });
         }
@@ -2061,6 +2077,9 @@ impl EventLoop {
 
         // Track whether any events will be published (before the loop consumes them).
         let had_events = !validated_events.is_empty();
+        let had_plan_events = validated_events
+            .iter()
+            .any(|event| event.topic.as_str().starts_with("plan."));
 
         // Publish validated events to the bus.
         // Ralph is always registered with subscribe("*"), so every event has at least
@@ -2097,6 +2116,7 @@ impl EventLoop {
 
         Ok(ProcessedEvents {
             had_events,
+            had_plan_events,
             has_orphans,
         })
     }

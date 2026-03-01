@@ -1124,6 +1124,74 @@ fn test_default_publishes_not_injected_when_events_written() {
     );
 }
 
+#[test]
+fn test_has_pending_plan_events_in_jsonl_peeks_without_consuming() {
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    let temp_dir = tempdir().unwrap();
+    let events_path = temp_dir.path().join("events.jsonl");
+
+    let mut event_loop = EventLoop::new(RalphConfig::default());
+    event_loop.event_reader = crate::event_reader::EventReader::new(&events_path);
+
+    let mut file = std::fs::File::create(&events_path).unwrap();
+    writeln!(
+        file,
+        r#"{{"topic":"plan.created","payload":"ready","ts":"2024-01-01T00:00:00Z"}}"#
+    )
+    .unwrap();
+    file.flush().unwrap();
+
+    assert!(
+        event_loop
+            .has_pending_plan_events_in_jsonl()
+            .expect("peek should succeed"),
+        "peek should report unread plan.* topics"
+    );
+
+    let processed = event_loop.process_events_from_jsonl().unwrap();
+    assert!(processed.had_events);
+    assert!(
+        processed.had_plan_events,
+        "processed metadata should preserve semantic plan.* detection"
+    );
+
+    assert!(
+        !event_loop
+            .has_pending_plan_events_in_jsonl()
+            .expect("peek after consume should succeed"),
+        "peek should return false after unread events are consumed"
+    );
+}
+
+#[test]
+fn test_process_events_from_jsonl_reports_when_plan_topics_absent() {
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    let temp_dir = tempdir().unwrap();
+    let events_path = temp_dir.path().join("events.jsonl");
+
+    let mut event_loop = EventLoop::new(RalphConfig::default());
+    event_loop.event_reader = crate::event_reader::EventReader::new(&events_path);
+
+    let mut file = std::fs::File::create(&events_path).unwrap();
+    writeln!(
+        file,
+        r#"{{"topic":"task.start","payload":"start","ts":"2024-01-01T00:00:00Z"}}"#
+    )
+    .unwrap();
+    file.flush().unwrap();
+
+    let processed = event_loop.process_events_from_jsonl().unwrap();
+    assert!(processed.had_events);
+    assert!(
+        !processed.had_plan_events,
+        "semantic plan.* flag should remain false when no plan topics were published"
+    );
+}
+
 /// Regression: when agent writes a non-orphan event (one whose topic IS a trigger for
 /// a hat), the caller must NOT inject default_publishes. This test replicates the exact
 /// caller logic from loop_runner.rs to detect the mismatch between has_orphans and had_events.

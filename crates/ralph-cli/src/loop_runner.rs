@@ -1548,11 +1548,127 @@ pub async fn run_loop_impl(
             warn!(error = %e, "Failed to check planning session responses");
         }
 
+        let should_dispatch_plan_created_hooks = event_loop
+            .has_pending_plan_events_in_jsonl()
+            .inspect_err(|e| {
+                warn!(
+                    error = %e,
+                    "Failed to inspect unread JSONL events for semantic plan.* topics"
+                )
+            })
+            .unwrap_or(false);
+
+        if should_dispatch_plan_created_hooks {
+            let pre_plan_created_outcomes = dispatch_phase_event_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                HookPhaseEvent::PrePlanCreated,
+                build_plan_created_payload_input(
+                    &loop_id,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    event_loop.state().iteration,
+                    Some(display_hat.as_str().to_string()),
+                    Some(display_hat.as_str().to_string()),
+                    None,
+                ),
+            );
+            fail_if_blocking_plan_created_outcomes(&pre_plan_created_outcomes)?;
+
+            if let Some(reason) = wait_for_resume_if_suspended(
+                &pre_plan_created_outcomes,
+                &loop_id,
+                &suspend_state_store,
+            )
+            .await?
+            {
+                let terminate_event = event_loop.publish_terminate_event(&reason);
+                log_terminate_event(
+                    &mut event_logger,
+                    event_loop.state().iteration,
+                    &terminate_event,
+                );
+                handle_termination(
+                    &reason,
+                    event_loop.state(),
+                    &config.core.scratchpad,
+                    &loop_history,
+                    &loop_context,
+                    auto_merge,
+                    &prompt_content,
+                );
+                if let Some(handle) = tui_handle.take() {
+                    let _ = handle.await;
+                }
+                return Ok(reason);
+            }
+        }
+
         // Read events from JSONL that agent may have written
-        let agent_wrote_events = event_loop
+        let processed_events = event_loop
             .process_events_from_jsonl()
             .inspect_err(|e| warn!(error = %e, "Failed to read events from JSONL"))
-            .map(|r| r.had_events)
+            .ok();
+
+        if processed_events
+            .as_ref()
+            .map(|events| events.had_plan_events)
+            .unwrap_or(false)
+        {
+            let post_plan_created_outcomes = dispatch_phase_event_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                HookPhaseEvent::PostPlanCreated,
+                build_plan_created_payload_input(
+                    &loop_id,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    event_loop.state().iteration,
+                    Some(display_hat.as_str().to_string()),
+                    Some(display_hat.as_str().to_string()),
+                    None,
+                ),
+            );
+            fail_if_blocking_plan_created_outcomes(&post_plan_created_outcomes)?;
+
+            if let Some(reason) = wait_for_resume_if_suspended(
+                &post_plan_created_outcomes,
+                &loop_id,
+                &suspend_state_store,
+            )
+            .await?
+            {
+                let terminate_event = event_loop.publish_terminate_event(&reason);
+                log_terminate_event(
+                    &mut event_logger,
+                    event_loop.state().iteration,
+                    &terminate_event,
+                );
+                handle_termination(
+                    &reason,
+                    event_loop.state(),
+                    &config.core.scratchpad,
+                    &loop_history,
+                    &loop_context,
+                    auto_merge,
+                    &prompt_content,
+                );
+                if let Some(handle) = tui_handle.take() {
+                    let _ = handle.await;
+                }
+                return Ok(reason);
+            }
+        }
+
+        let agent_wrote_events = processed_events
+            .as_ref()
+            .map(|events| events.had_events)
             .unwrap_or(false);
 
         // Inject default_publishes for active hats only when agent wrote no events
@@ -1642,6 +1758,32 @@ fn build_loop_start_payload_input(
 }
 
 fn build_iteration_start_payload_input(
+    loop_id: &str,
+    ctx: &LoopContext,
+    max_iterations: u32,
+    iteration_current: u32,
+    active_hat: Option<String>,
+    selected_hat: Option<String>,
+    selected_task: Option<String>,
+) -> HookPayloadBuilderInput {
+    HookPayloadBuilderInput {
+        loop_id: loop_id.to_string(),
+        is_primary: ctx.is_primary(),
+        workspace: ctx.workspace().to_path_buf(),
+        repo_root: ctx.repo_root().to_path_buf(),
+        pid: std::process::id(),
+        iteration_current,
+        iteration_max: max_iterations,
+        context: HookPayloadContextInput {
+            active_hat,
+            selected_hat,
+            selected_task,
+            ..HookPayloadContextInput::default()
+        },
+    }
+}
+
+fn build_plan_created_payload_input(
     loop_id: &str,
     ctx: &LoopContext,
     max_iterations: u32,
@@ -2258,6 +2400,25 @@ fn fail_if_blocking_iteration_start_outcomes(outcomes: &[HookDispatchOutcome]) -
         hook_name = %blocking_outcome.hook_name,
         reason = %reason,
         "Lifecycle hook blocked iteration.start boundary"
+    );
+
+    Err(anyhow::anyhow!(reason))
+}
+
+fn fail_if_blocking_plan_created_outcomes(outcomes: &[HookDispatchOutcome]) -> Result<()> {
+    let Some(blocking_outcome) = outcomes
+        .iter()
+        .find(|outcome| outcome.disposition == HookDisposition::Block)
+    else {
+        return Ok(());
+    };
+
+    let reason = format_blocking_hook_reason(blocking_outcome);
+    error!(
+        phase_event = %blocking_outcome.phase_event,
+        hook_name = %blocking_outcome.hook_name,
+        reason = %reason,
+        "Lifecycle hook blocked plan.created boundary"
     );
 
     Err(anyhow::anyhow!(reason))

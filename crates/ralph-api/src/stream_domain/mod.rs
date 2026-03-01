@@ -4,7 +4,7 @@ mod rpc_side_effects;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use chrono::{SecondsFormat, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
@@ -459,6 +459,4 @@ fn next_event(
     }
 }
 
-fn now_ts() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
-}
+use crate::loop_support::now_ts;

@@ -1,6 +1,5 @@
 use std::sync::OnceLock;
 
-use chrono::{SecondsFormat, Utc};
 use jsonschema::{Draft, JSONSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -230,9 +229,7 @@ fn response_meta(served_by: &str) -> ResponseMeta {
     }
 }
 
-fn now_ts() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
-}
+use crate::loop_support::now_ts;
 
 fn request_schema_validator() -> &'static JSONSchema {
     static REQUEST_VALIDATOR: OnceLock<JSONSchema> = OnceLock::new();

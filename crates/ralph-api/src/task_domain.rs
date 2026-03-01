@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use chrono::{SecondsFormat, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::ApiError;
@@ -527,6 +527,4 @@ fn is_terminal_status(status: &str) -> bool {
     matches!(status, "closed" | "failed")
 }
 
-fn now_ts() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
-}
+use crate::loop_support::now_ts;

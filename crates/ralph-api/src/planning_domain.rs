@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use chrono::{SecondsFormat, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -589,6 +589,4 @@ fn generate_title(prompt: &str) -> String {
     shortened
 }
 
-fn now_ts() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
-}
+use crate::loop_support::now_ts;

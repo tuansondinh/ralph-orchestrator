@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use chrono::{SecondsFormat, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::warn;
@@ -346,6 +346,4 @@ fn collection_not_found_error(collection_id: &str) -> ApiError {
         .with_details(serde_json::json!({ "collectionId": collection_id }))
 }
 
-pub(super) fn now_ts() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
-}
+use crate::loop_support::now_ts;

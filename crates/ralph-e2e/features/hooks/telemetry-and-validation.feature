@@ -6,19 +6,17 @@ Feature: Hook telemetry and validation
   @AC-16
   Scenario: AC-16 Hook telemetry completeness
     Given any hook invocation
-    When it completes or times out
-    Then telemetry includes: event, phase, timestamps, duration, exit code, timeout flag, outputs, disposition
+    When it completes (or times out)
+    Then telemetry includes event/phase, timestamps, duration, exit code, timeout, outputs, disposition
 
   @AC-17
   Scenario: AC-17 Validation command
-    Given malformed hooks config in ralph.yml
+    Given malformed hooks config
     When "ralph hooks validate" runs
-    Then it returns actionable failure messages
-    And no loop execution is started
+    Then it returns actionable failures without starting loop execution
 
   @AC-18
   Scenario: AC-18 Preflight integration
     Given preflight is enabled
     When "ralph run" starts
-    Then hooks validation executes as part of preflight
-    And the run can fail appropriately if hooks are invalid
+    Then hooks validation executes as part of preflight and can fail the run

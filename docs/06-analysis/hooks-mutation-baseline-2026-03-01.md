@@ -61,9 +61,77 @@ Target critical ranges:
 
 Current baseline in those ranges:
 
+- No `MISS` survivors in either critical range (`3467-3560`, `3623-3635`).
 - `TIMEOUT crates/ralph-cli/src/loop_runner.rs:3475:45: replace == with != in wait_for_resume_if_suspended`
-- No `MISS` survivors in `3623-3635`.
-- `disposition_from_on_error` currently has an `unviable` mutant at `3632` (non-survivor class, but still important context).
+- `unviable` mutants in disposition mapping at `3624` and `3632` (non-survivor class).
+
+## Step 12.4: Critical no-survivor invariant enforcement
+
+### Invariant definition
+
+For Step 12.5 CI wiring, critical-path mutation enforcement is:
+
+- **Hard fail** if any `MISS` mutant appears in:
+  - `crates/ralph-cli/src/loop_runner.rs:3467-3560` (suspend/resume transition)
+  - `crates/ralph-cli/src/loop_runner.rs:3623-3635` (on_error disposition mapping)
+- Treat `TIMEOUT` and `unviable` as separate classes that must be explained in gate output.
+
+### Current invariant status
+
+| Critical range | MISS | TIMEOUT | Unviable | Status |
+|---|---:|---:|---:|---|
+| `loop_runner.rs:3467-3560` (suspend/resume) | 0 | 1 | 0 | ✅ PASS |
+| `loop_runner.rs:3623-3635` (disposition mapping) | 0 | 0 | 2 | ✅ PASS |
+
+Evidence from baseline artifacts:
+
+- `docs/06-analysis/hooks-mutation-baseline-2026-03-01-survivors.txt`
+  - no `MISS` lines in either critical range
+  - one `TIMEOUT` line at `3475` (`wait_for_resume_if_suspended`)
+- `/tmp/hooks-mutants-baseline/mutants.out/unviable.txt`
+  - `3624`: `classify_hook_disposition -> Default::default()`
+  - `3632`: `disposition_from_on_error -> Default::default()`
+
+### TIMEOUT rationale for Step 12.5 gate
+
+The `TIMEOUT` at `3475` is expected in mutation mode: `wait_for_resume_if_suspended` loops until external `.ralph/resume-requested`, `.ralph/stop-requested`, or `.ralph/restart-requested` signals are observed. The mutant flips the resume check and can create a non-terminating wait. This is a **blocking-control-flow timeout**, not a silent `MISS` survivor.
+
+Step 12.5 gate behavior should therefore be:
+
+1. Reject any `MISS` in critical ranges.
+2. Report critical-range `TIMEOUT` entries separately with explicit rationale.
+3. Keep timeout count visible for ratcheting, but do not classify it as a no-survivor violation.
+
+### Unviable rationale for Step 12.5 gate
+
+Both critical-range unviable mutants are type-invalid replacements:
+
+- `classify_hook_disposition` and `disposition_from_on_error` return `HookDisposition`
+- Replacing these functions with `Default::default()` is not compilable because `HookDisposition` has no `Default` implementation
+
+These are compiler-rejected mutants and should be treated as **non-survivor** evidence in Step 12.5 reporting.
+
+### Test coverage verification
+
+Existing tests in `loop_runner.rs` exercise suspend/resume control flow in this critical region:
+
+```rust
+// Line 7513: no-op when no suspend disposition
+fn test_wait_for_resume_if_suspended_is_noop_without_suspend_dispositions()
+
+// Line 7543: resume signal clears suspend artifacts
+fn test_wait_for_resume_if_suspended_resumes_and_clears_suspend_artifacts()
+
+// Line 7568: stop signal is prioritized over resume
+fn test_wait_for_resume_if_suspended_prioritizes_stop_over_resume()
+
+// Line 7598: restart signal is prioritized over resume
+fn test_wait_for_resume_if_suspended_prioritizes_restart_over_resume()
+```
+
+### Invariant enforcement decision
+
+✅ **Step 12.4 complete:** no `MISS` survivors in disposition/suspend critical paths, with `TIMEOUT` and `unviable` classes explicitly characterized for Step 12.5 CI gate wiring.
 
 ## Actionable survivor output
 

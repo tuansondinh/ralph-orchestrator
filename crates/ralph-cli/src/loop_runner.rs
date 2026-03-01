@@ -823,12 +823,39 @@ pub async fn run_loop_impl(
     };
 
     if let Some(reason) = pending_suspend_termination_reason.take() {
+        let reason = dispatch_pre_loop_termination_hooks(
+            &event_loop,
+            hooks_dispatch_enabled,
+            &loop_id,
+            &hook_engine,
+            &hook_executor,
+            &suspend_state_store,
+            &ctx,
+            config.event_loop.max_iterations,
+            reason,
+        )
+        .await?;
+
         let terminate_event = event_loop.publish_terminate_event(&reason);
         log_terminate_event(
             &mut event_logger,
             event_loop.state().iteration,
             &terminate_event,
         );
+
+        let reason = dispatch_post_loop_termination_hooks(
+            &event_loop,
+            hooks_dispatch_enabled,
+            &loop_id,
+            &hook_engine,
+            &hook_executor,
+            &suspend_state_store,
+            &ctx,
+            config.event_loop.max_iterations,
+            reason,
+        )
+        .await?;
+
         handle_termination(
             &reason,
             event_loop.state(),
@@ -865,13 +892,39 @@ pub async fn run_loop_impl(
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 let _ = killpg(pgid, Signal::SIGKILL);
             }
-            let reason = TerminationReason::Interrupted;
+            let reason = dispatch_pre_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                TerminationReason::Interrupted,
+            )
+            .await?;
+
             let terminate_event = event_loop.publish_terminate_event(&reason);
             log_terminate_event(
                 &mut event_logger,
                 event_loop.state().iteration,
                 &terminate_event,
             );
+
+            let reason = dispatch_post_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             handle_termination(
                 &reason,
                 event_loop.state(),
@@ -959,6 +1012,19 @@ pub async fn run_loop_impl(
 
         // Check termination before execution
         if let Some(reason) = event_loop.check_termination() {
+            let reason = dispatch_pre_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             // Per spec: Publish loop.terminate event to observers
             let terminate_event = event_loop.publish_terminate_event(&reason);
             log_terminate_event(
@@ -966,6 +1032,20 @@ pub async fn run_loop_impl(
                 event_loop.state().iteration,
                 &terminate_event,
             );
+
+            let reason = dispatch_post_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             handle_termination(
                 &reason,
                 event_loop.state(),
@@ -1011,12 +1091,39 @@ pub async fn run_loop_impl(
             )
             .await?
             {
+                let reason = dispatch_pre_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 let terminate_event = event_loop.publish_terminate_event(&reason);
                 log_terminate_event(
                     &mut event_logger,
                     event_loop.state().iteration,
                     &terminate_event,
                 );
+
+                let reason = dispatch_post_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 handle_termination(
                     &reason,
                     event_loop.state(),
@@ -1052,13 +1159,39 @@ pub async fn run_loop_impl(
                         "Fallback recovery exhausted after {} attempts, terminating",
                         MAX_FALLBACK_ATTEMPTS
                     );
-                    let reason = TerminationReason::Stopped;
+                    let reason = dispatch_pre_loop_termination_hooks(
+                        &event_loop,
+                        hooks_dispatch_enabled,
+                        &loop_id,
+                        &hook_engine,
+                        &hook_executor,
+                        &suspend_state_store,
+                        &ctx,
+                        config.event_loop.max_iterations,
+                        TerminationReason::Stopped,
+                    )
+                    .await?;
+
                     let terminate_event = event_loop.publish_terminate_event(&reason);
                     log_terminate_event(
                         &mut event_logger,
                         event_loop.state().iteration,
                         &terminate_event,
                     );
+
+                    let reason = dispatch_post_loop_termination_hooks(
+                        &event_loop,
+                        hooks_dispatch_enabled,
+                        &loop_id,
+                        &hook_engine,
+                        &hook_executor,
+                        &suspend_state_store,
+                        &ctx,
+                        config.event_loop.max_iterations,
+                        reason,
+                    )
+                    .await?;
+
                     handle_termination(
                         &reason,
                         event_loop.state(),
@@ -1086,7 +1219,19 @@ pub async fn run_loop_impl(
 
                 // Fallback not possible (no planner hat or doesn't subscribe to task.resume)
                 warn!("No hats with pending events and fallback not available, terminating");
-                let reason = TerminationReason::Stopped;
+                let reason = dispatch_pre_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    TerminationReason::Stopped,
+                )
+                .await?;
+
                 // Per spec: Publish loop.terminate event to observers
                 let terminate_event = event_loop.publish_terminate_event(&reason);
                 log_terminate_event(
@@ -1094,6 +1239,20 @@ pub async fn run_loop_impl(
                     event_loop.state().iteration,
                     &terminate_event,
                 );
+
+                let reason = dispatch_post_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 handle_termination(
                     &reason,
                     event_loop.state(),
@@ -1159,12 +1318,39 @@ pub async fn run_loop_impl(
         )
         .await?
         {
+            let reason = dispatch_pre_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             let terminate_event = event_loop.publish_terminate_event(&reason);
             log_terminate_event(
                 &mut event_logger,
                 event_loop.state().iteration,
                 &terminate_event,
             );
+
+            let reason = dispatch_post_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             handle_termination(
                 &reason,
                 event_loop.state(),
@@ -1436,9 +1622,35 @@ pub async fn run_loop_impl(
                     let _ = killpg(pgid, Signal::SIGKILL);
                 }
 
-                let reason = TerminationReason::Interrupted;
+                let reason = dispatch_pre_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    TerminationReason::Interrupted,
+                )
+                .await?;
+
                 let terminate_event = event_loop.publish_terminate_event(&reason);
                 log_terminate_event(&mut event_logger, event_loop.state().iteration, &terminate_event);
+
+                let reason = dispatch_post_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 handle_termination(&reason, event_loop.state(), &config.core.scratchpad, &loop_history, &loop_context, auto_merge, &prompt_content);
                 // Signal TUI to exit immediately on interrupt
                 let _ = terminated_tx.send(true);
@@ -1447,12 +1659,39 @@ pub async fn run_loop_impl(
         };
 
         if let Some(reason) = outcome.termination {
+            let reason = dispatch_pre_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             let terminate_event = event_loop.publish_terminate_event(&reason);
             log_terminate_event(
                 &mut event_logger,
                 event_loop.state().iteration,
                 &terminate_event,
             );
+
+            let reason = dispatch_post_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             handle_termination(
                 &reason,
                 event_loop.state(),
@@ -1520,6 +1759,20 @@ pub async fn run_loop_impl(
                     config.event_loop.completion_promise
                 );
             }
+
+            let reason = dispatch_pre_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             // Per spec: Publish loop.terminate event to observers
             let terminate_event = event_loop.publish_terminate_event(&reason);
             log_terminate_event(
@@ -1527,6 +1780,20 @@ pub async fn run_loop_impl(
                 event_loop.state().iteration,
                 &terminate_event,
             );
+
+            let reason = dispatch_post_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             handle_termination(
                 &reason,
                 event_loop.state(),
@@ -1585,12 +1852,39 @@ pub async fn run_loop_impl(
             )
             .await?
             {
+                let reason = dispatch_pre_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 let terminate_event = event_loop.publish_terminate_event(&reason);
                 log_terminate_event(
                     &mut event_logger,
                     event_loop.state().iteration,
                     &terminate_event,
                 );
+
+                let reason = dispatch_post_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 handle_termination(
                     &reason,
                     event_loop.state(),
@@ -1646,12 +1940,39 @@ pub async fn run_loop_impl(
             )
             .await?
             {
+                let reason = dispatch_pre_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 let terminate_event = event_loop.publish_terminate_event(&reason);
                 log_terminate_event(
                     &mut event_logger,
                     event_loop.state().iteration,
                     &terminate_event,
                 );
+
+                let reason = dispatch_post_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 handle_termination(
                     &reason,
                     event_loop.state(),
@@ -1705,12 +2026,39 @@ pub async fn run_loop_impl(
             )
             .await?
             {
+                let reason = dispatch_pre_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 let terminate_event = event_loop.publish_terminate_event(&reason);
                 log_terminate_event(
                     &mut event_logger,
                     event_loop.state().iteration,
                     &terminate_event,
                 );
+
+                let reason = dispatch_post_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 handle_termination(
                     &reason,
                     event_loop.state(),
@@ -1758,12 +2106,39 @@ pub async fn run_loop_impl(
             )
             .await?
             {
+                let reason = dispatch_pre_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 let terminate_event = event_loop.publish_terminate_event(&reason);
                 log_terminate_event(
                     &mut event_logger,
                     event_loop.state().iteration,
                     &terminate_event,
                 );
+
+                let reason = dispatch_post_loop_termination_hooks(
+                    &event_loop,
+                    hooks_dispatch_enabled,
+                    &loop_id,
+                    &hook_engine,
+                    &hook_executor,
+                    &suspend_state_store,
+                    &ctx,
+                    config.event_loop.max_iterations,
+                    reason,
+                )
+                .await?;
+
                 handle_termination(
                     &reason,
                     event_loop.state(),
@@ -1802,12 +2177,39 @@ pub async fn run_loop_impl(
                 config.event_loop.completion_promise
             );
 
+            let reason = dispatch_pre_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             let terminate_event = event_loop.publish_terminate_event(&reason);
             log_terminate_event(
                 &mut event_logger,
                 event_loop.state().iteration,
                 &terminate_event,
             );
+
+            let reason = dispatch_post_loop_termination_hooks(
+                &event_loop,
+                hooks_dispatch_enabled,
+                &loop_id,
+                &hook_engine,
+                &hook_executor,
+                &suspend_state_store,
+                &ctx,
+                config.event_loop.max_iterations,
+                reason,
+            )
+            .await?;
+
             handle_termination(
                 &reason,
                 event_loop.state(),
@@ -1949,6 +2351,166 @@ fn build_human_interact_payload_input(
             ..HookPayloadContextInput::default()
         },
     }
+}
+
+fn build_loop_termination_payload_input(
+    loop_id: &str,
+    ctx: &LoopContext,
+    max_iterations: u32,
+    iteration_current: u32,
+    active_hat: Option<String>,
+    selected_hat: Option<String>,
+    selected_task: Option<String>,
+    termination_reason: &TerminationReason,
+) -> HookPayloadBuilderInput {
+    HookPayloadBuilderInput {
+        loop_id: loop_id.to_string(),
+        is_primary: ctx.is_primary(),
+        workspace: ctx.workspace().to_path_buf(),
+        repo_root: ctx.repo_root().to_path_buf(),
+        pid: std::process::id(),
+        iteration_current,
+        iteration_max: max_iterations,
+        context: HookPayloadContextInput {
+            active_hat,
+            selected_hat,
+            selected_task,
+            termination_reason: Some(termination_reason.as_str().to_string()),
+            ..HookPayloadContextInput::default()
+        },
+    }
+}
+
+fn loop_termination_phase_events(reason: &TerminationReason) -> (HookPhaseEvent, HookPhaseEvent) {
+    if reason.is_success() {
+        (
+            HookPhaseEvent::PreLoopComplete,
+            HookPhaseEvent::PostLoopComplete,
+        )
+    } else {
+        (HookPhaseEvent::PreLoopError, HookPhaseEvent::PostLoopError)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_pre_loop_termination_hooks(
+    event_loop: &EventLoop,
+    hooks_dispatch_enabled: bool,
+    loop_id: &str,
+    hook_engine: &HookEngine,
+    hook_executor: &HookExecutor,
+    suspend_state_store: &SuspendStateStore,
+    ctx: &LoopContext,
+    max_iterations: u32,
+    reason: TerminationReason,
+) -> impl std::future::Future<Output = Result<TerminationReason>> + Send {
+    let outcomes = collect_loop_termination_hook_outcomes(
+        event_loop,
+        hooks_dispatch_enabled,
+        loop_id,
+        hook_engine,
+        hook_executor,
+        ctx,
+        max_iterations,
+        &reason,
+        true,
+    );
+    let loop_id = loop_id.to_string();
+    let suspend_state_store = suspend_state_store.clone();
+
+    async move {
+        resolve_loop_termination_hook_outcomes(&outcomes, &loop_id, &suspend_state_store, reason)
+            .await
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_post_loop_termination_hooks(
+    event_loop: &EventLoop,
+    hooks_dispatch_enabled: bool,
+    loop_id: &str,
+    hook_engine: &HookEngine,
+    hook_executor: &HookExecutor,
+    suspend_state_store: &SuspendStateStore,
+    ctx: &LoopContext,
+    max_iterations: u32,
+    reason: TerminationReason,
+) -> impl std::future::Future<Output = Result<TerminationReason>> + Send {
+    let outcomes = collect_loop_termination_hook_outcomes(
+        event_loop,
+        hooks_dispatch_enabled,
+        loop_id,
+        hook_engine,
+        hook_executor,
+        ctx,
+        max_iterations,
+        &reason,
+        false,
+    );
+    let loop_id = loop_id.to_string();
+    let suspend_state_store = suspend_state_store.clone();
+
+    async move {
+        resolve_loop_termination_hook_outcomes(&outcomes, &loop_id, &suspend_state_store, reason)
+            .await
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_loop_termination_hook_outcomes(
+    event_loop: &EventLoop,
+    hooks_dispatch_enabled: bool,
+    loop_id: &str,
+    hook_engine: &HookEngine,
+    hook_executor: &HookExecutor,
+    ctx: &LoopContext,
+    max_iterations: u32,
+    reason: &TerminationReason,
+    is_pre_phase: bool,
+) -> Vec<HookDispatchOutcome> {
+    let (pre_phase_event, post_phase_event) = loop_termination_phase_events(reason);
+    let phase_event = if is_pre_phase {
+        pre_phase_event
+    } else {
+        post_phase_event
+    };
+
+    let active_hat = event_loop.get_active_hat_id().as_str().to_string();
+    dispatch_phase_event_hooks(
+        event_loop,
+        hooks_dispatch_enabled,
+        loop_id,
+        hook_engine,
+        hook_executor,
+        phase_event,
+        build_loop_termination_payload_input(
+            loop_id,
+            ctx,
+            max_iterations,
+            event_loop.state().iteration,
+            Some(active_hat.clone()),
+            Some(active_hat),
+            None,
+            reason,
+        ),
+    )
+}
+
+async fn resolve_loop_termination_hook_outcomes(
+    outcomes: &[HookDispatchOutcome],
+    loop_id: &str,
+    suspend_state_store: &SuspendStateStore,
+    reason: TerminationReason,
+) -> Result<TerminationReason> {
+    fail_if_blocking_loop_termination_outcomes(outcomes)?;
+
+    if let Some(termination_reason) =
+        wait_for_resume_if_suspended(outcomes, loop_id, suspend_state_store).await?
+    {
+        return Ok(termination_reason);
+    }
+
+    Ok(reason)
 }
 
 const RETRY_BACKOFF_DELAYS_MS: [u64; 3] = [100, 200, 400];
@@ -2580,6 +3142,25 @@ fn fail_if_blocking_human_interact_outcomes(outcomes: &[HookDispatchOutcome]) ->
         hook_name = %blocking_outcome.hook_name,
         reason = %reason,
         "Lifecycle hook blocked human.interact boundary"
+    );
+
+    Err(anyhow::anyhow!(reason))
+}
+
+fn fail_if_blocking_loop_termination_outcomes(outcomes: &[HookDispatchOutcome]) -> Result<()> {
+    let Some(blocking_outcome) = outcomes
+        .iter()
+        .find(|outcome| outcome.disposition == HookDisposition::Block)
+    else {
+        return Ok(());
+    };
+
+    let reason = format_blocking_hook_reason(blocking_outcome);
+    error!(
+        phase_event = %blocking_outcome.phase_event,
+        hook_name = %blocking_outcome.hook_name,
+        reason = %reason,
+        "Lifecycle hook blocked loop termination boundary"
     );
 
     Err(anyhow::anyhow!(reason))
@@ -5267,6 +5848,116 @@ exit 73"#
         let blocked_exec_message = blocked_exec_error.to_string();
         assert!(blocked_exec_message.contains("block-exec-hook"));
         assert!(blocked_exec_message.contains("pre.human.interact"));
+        assert!(blocked_exec_message.contains("hook execution failed: spawn failed"));
+    }
+
+    #[test]
+    fn test_loop_termination_phase_events_maps_success_and_error_reasons() {
+        assert_eq!(
+            loop_termination_phase_events(&TerminationReason::CompletionPromise),
+            (
+                HookPhaseEvent::PreLoopComplete,
+                HookPhaseEvent::PostLoopComplete
+            )
+        );
+        assert_eq!(
+            loop_termination_phase_events(&TerminationReason::MaxRuntime),
+            (HookPhaseEvent::PreLoopError, HookPhaseEvent::PostLoopError)
+        );
+    }
+
+    #[test]
+    fn test_build_loop_termination_payload_input_sets_termination_reason_context() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+
+        let payload_input = build_loop_termination_payload_input(
+            "loop-test",
+            &loop_ctx,
+            42,
+            7,
+            Some("planner".to_string()),
+            Some("builder".to_string()),
+            Some("task-123".to_string()),
+            &TerminationReason::RestartRequested,
+        );
+
+        assert_eq!(
+            payload_input.context.termination_reason.as_deref(),
+            Some("restart_requested")
+        );
+        assert_eq!(payload_input.context.active_hat.as_deref(), Some("planner"));
+        assert_eq!(
+            payload_input.context.selected_hat.as_deref(),
+            Some("builder")
+        );
+        assert_eq!(
+            payload_input.context.selected_task.as_deref(),
+            Some("task-123")
+        );
+    }
+
+    #[test]
+    fn test_fail_if_blocking_loop_termination_outcomes_allows_non_blocking_dispositions() {
+        let outcomes = vec![
+            HookDispatchOutcome {
+                phase_event: HookPhaseEvent::PreLoopComplete,
+                hook_name: "warn-hook".to_string(),
+                disposition: HookDisposition::Warn,
+                suspend_mode: HookSuspendMode::WaitForResume,
+                failure: Some(HookDispatchFailure::HookRunFailed {
+                    exit_code: Some(9),
+                    timed_out: false,
+                }),
+            },
+            HookDispatchOutcome {
+                phase_event: HookPhaseEvent::PostLoopError,
+                hook_name: "pass-hook".to_string(),
+                disposition: HookDisposition::Pass,
+                suspend_mode: HookSuspendMode::WaitForResume,
+                failure: None,
+            },
+        ];
+
+        assert!(fail_if_blocking_loop_termination_outcomes(&outcomes).is_ok());
+    }
+
+    #[test]
+    fn test_fail_if_blocking_loop_termination_outcomes_surfaces_failure_context() {
+        let blocked_timeout_outcomes = vec![HookDispatchOutcome {
+            phase_event: HookPhaseEvent::PostLoopError,
+            hook_name: "block-timeout-hook".to_string(),
+            disposition: HookDisposition::Block,
+            suspend_mode: HookSuspendMode::WaitForResume,
+            failure: Some(HookDispatchFailure::HookRunFailed {
+                exit_code: None,
+                timed_out: true,
+            }),
+        }];
+
+        let blocked_timeout_error =
+            fail_if_blocking_loop_termination_outcomes(&blocked_timeout_outcomes)
+                .expect_err("block disposition should fail loop termination boundary");
+        let blocked_timeout_message = blocked_timeout_error.to_string();
+        assert!(blocked_timeout_message.contains("block-timeout-hook"));
+        assert!(blocked_timeout_message.contains("post.loop.error"));
+        assert!(blocked_timeout_message.contains("hook timed out"));
+
+        let blocked_exec_outcomes = vec![HookDispatchOutcome {
+            phase_event: HookPhaseEvent::PreLoopComplete,
+            hook_name: "block-exec-hook".to_string(),
+            disposition: HookDisposition::Block,
+            suspend_mode: HookSuspendMode::WaitForResume,
+            failure: Some(HookDispatchFailure::HookExecutionError {
+                message: "spawn failed".to_string(),
+            }),
+        }];
+
+        let blocked_exec_error = fail_if_blocking_loop_termination_outcomes(&blocked_exec_outcomes)
+            .expect_err("block disposition should fail loop termination boundary");
+        let blocked_exec_message = blocked_exec_error.to_string();
+        assert!(blocked_exec_message.contains("block-exec-hook"));
+        assert!(blocked_exec_message.contains("pre.loop.complete"));
         assert!(blocked_exec_message.contains("hook execution failed: spawn failed"));
     }
 

@@ -13,10 +13,10 @@ use ralph_adapters::{
 use ralph_core::diagnostics::{HookDisposition, HookRunTelemetryEntry};
 use ralph_core::{
     CompletionAction, EventLogger, EventLoop, EventParser, EventRecord, HookEngine, HookExecutor,
-    HookExecutorContract, HookOnError, HookPayloadBuilderInput, HookPayloadContextInput,
-    HookPhaseEvent, HookRunRequest, HookRunResult, HookSuspendMode, LoopCompletionHandler,
-    LoopContext, LoopHistory, LoopRegistry, MergeQueue, RalphConfig, Record, SessionRecorder,
-    SummaryWriter, SuspendStateRecord, SuspendStateStore, TerminationReason,
+    HookExecutorContract, HookMutationConfig, HookOnError, HookPayloadBuilderInput,
+    HookPayloadContextInput, HookPhaseEvent, HookRunRequest, HookRunResult, HookSuspendMode,
+    LoopCompletionHandler, LoopContext, LoopHistory, LoopRegistry, MergeQueue, RalphConfig, Record,
+    SessionRecorder, SummaryWriter, SuspendStateRecord, SuspendStateStore, TerminationReason,
 };
 use ralph_proto::{Event, GuidanceTarget, HatId, RpcEvent, RpcState, RpcTaskCounts};
 use ralph_tui::Tui;
@@ -2516,6 +2516,105 @@ async fn resolve_loop_termination_hook_outcomes(
 const RETRY_BACKOFF_DELAYS_MS: [u64; 3] = [100, 200, 400];
 const RETRY_BACKOFF_SIGNAL_POLL_INTERVAL_MS: u64 = 100;
 const SUSPEND_WAIT_SIGNAL_POLL_INTERVAL_MS: u64 = 250;
+const HOOK_MUTATION_PAYLOAD_METADATA_KEY: &str = "metadata";
+const HOOK_MUTATION_METADATA_NAMESPACE_KEY: &str = "hook_metadata";
+
+#[derive(Debug, Clone, PartialEq)]
+enum HookMutationParseOutcome {
+    Disabled,
+    Parsed {
+        namespaced_metadata: serde_json::Map<String, serde_json::Value>,
+    },
+    Invalid(HookMutationParseError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HookMutationParseError {
+    InvalidJson { message: String },
+    InvalidSchema { message: String },
+}
+
+fn parse_hook_mutation_stdout(
+    mutate: &HookMutationConfig,
+    hook_name: &str,
+    stdout: &str,
+) -> HookMutationParseOutcome {
+    if !mutate.enabled {
+        return HookMutationParseOutcome::Disabled;
+    }
+
+    let parsed = match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return HookMutationParseOutcome::Invalid(HookMutationParseError::InvalidJson {
+                message: format!("mutation stdout is not valid JSON: {error}"),
+            });
+        }
+    };
+
+    let Some(payload_object) = parsed.as_object() else {
+        return HookMutationParseOutcome::Invalid(HookMutationParseError::InvalidSchema {
+            message: "mutation payload must be a JSON object".to_string(),
+        });
+    };
+
+    if payload_object.len() != 1 || !payload_object.contains_key(HOOK_MUTATION_PAYLOAD_METADATA_KEY)
+    {
+        let keys = payload_object.keys().cloned().collect::<Vec<_>>();
+        return HookMutationParseOutcome::Invalid(HookMutationParseError::InvalidSchema {
+            message: format!(
+                "mutation payload supports only '{{\"{HOOK_MUTATION_PAYLOAD_METADATA_KEY}\": {{...}}}}'; found keys: {keys:?}"
+            ),
+        });
+    }
+
+    let Some(metadata) = payload_object
+        .get(HOOK_MUTATION_PAYLOAD_METADATA_KEY)
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+    else {
+        return HookMutationParseOutcome::Invalid(HookMutationParseError::InvalidSchema {
+            message: "mutation payload key 'metadata' must contain a JSON object".to_string(),
+        });
+    };
+
+    let mut namespaced_metadata = serde_json::Map::new();
+    if let Err(error) = merge_hook_metadata_namespace(&mut namespaced_metadata, hook_name, metadata)
+    {
+        return HookMutationParseOutcome::Invalid(error);
+    }
+
+    HookMutationParseOutcome::Parsed {
+        namespaced_metadata,
+    }
+}
+
+fn merge_hook_metadata_namespace(
+    accumulated_metadata: &mut serde_json::Map<String, serde_json::Value>,
+    hook_name: &str,
+    metadata: serde_json::Map<String, serde_json::Value>,
+) -> std::result::Result<(), HookMutationParseError> {
+    if hook_name.trim().is_empty() {
+        return Err(HookMutationParseError::InvalidSchema {
+            message: "hook metadata namespace requires non-empty hook name".to_string(),
+        });
+    }
+
+    let namespace = accumulated_metadata
+        .entry(HOOK_MUTATION_METADATA_NAMESPACE_KEY.to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+
+    let Some(namespace_object) = namespace.as_object_mut() else {
+        return Err(HookMutationParseError::InvalidSchema {
+            message: format!(
+                "metadata namespace '{HOOK_MUTATION_METADATA_NAMESPACE_KEY}' must be a JSON object"
+            ),
+        });
+    };
+
+    namespace_object.insert(hook_name.to_string(), serde_json::Value::Object(metadata));
+    Ok(())
+}
 
 fn max_retry_attempts_for_suspend_mode(suspend_mode: HookSuspendMode) -> u32 {
     match suspend_mode {
@@ -2618,6 +2717,7 @@ fn dispatch_phase_event_hooks(
             &hook_name,
             hook.on_error,
             hook.suspend_mode,
+            &hook.mutate,
             &request,
         );
         outcomes.push(outcome);
@@ -2636,6 +2736,7 @@ fn dispatch_hook_with_suspend_policy(
     hook_name: &str,
     on_error: HookOnError,
     suspend_mode: HookSuspendMode,
+    mutate: &HookMutationConfig,
     request: &HookRunRequest,
 ) -> HookDispatchOutcome {
     let retry_max_attempts = max_retry_attempts_for_suspend_mode(suspend_mode);
@@ -2648,6 +2749,7 @@ fn dispatch_hook_with_suspend_policy(
         hook_name,
         on_error,
         suspend_mode,
+        mutate,
         1,
         retry_max_attempts,
         request,
@@ -2668,6 +2770,7 @@ fn dispatch_hook_with_suspend_policy(
             hook_name,
             on_error,
             suspend_mode,
+            mutate,
             retry_max_attempts,
             request,
             outcome,
@@ -2681,6 +2784,7 @@ fn dispatch_hook_with_suspend_policy(
             hook_name,
             on_error,
             suspend_mode,
+            mutate,
             retry_max_attempts,
             request,
             outcome,
@@ -2698,6 +2802,7 @@ fn dispatch_retry_backoff_suspend_policy(
     hook_name: &str,
     on_error: HookOnError,
     suspend_mode: HookSuspendMode,
+    mutate: &HookMutationConfig,
     retry_max_attempts: u32,
     request: &HookRunRequest,
     outcome: HookDispatchOutcome,
@@ -2722,6 +2827,7 @@ fn dispatch_retry_backoff_suspend_policy(
                 hook_name,
                 on_error,
                 suspend_mode,
+                mutate,
                 retry_attempt,
                 retry_max_attempts,
                 request,
@@ -2741,6 +2847,7 @@ fn dispatch_wait_then_retry_suspend_policy(
     hook_name: &str,
     on_error: HookOnError,
     suspend_mode: HookSuspendMode,
+    mutate: &HookMutationConfig,
     retry_max_attempts: u32,
     request: &HookRunRequest,
     outcome: HookDispatchOutcome,
@@ -2792,6 +2899,7 @@ fn dispatch_wait_then_retry_suspend_policy(
                 hook_name,
                 on_error,
                 suspend_mode,
+                mutate,
                 2,
                 retry_max_attempts,
                 request,
@@ -2942,6 +3050,7 @@ fn execute_hook_attempt(
     hook_name: &str,
     on_error: HookOnError,
     suspend_mode: HookSuspendMode,
+    mutate: &HookMutationConfig,
     retry_attempt: u32,
     retry_max_attempts: u32,
     request: &HookRunRequest,
@@ -2949,6 +3058,7 @@ fn execute_hook_attempt(
     match hook_executor.run(request.clone()) {
         Ok(run_result) => {
             let disposition = classify_hook_disposition(on_error, &run_result);
+            let _ = parse_hook_mutation_stdout(mutate, hook_name, &run_result.stdout.content);
 
             event_loop.log_hook_run_telemetry(HookRunTelemetryEntry::from_run_result(
                 loop_id,
@@ -6314,6 +6424,138 @@ exit 73"#
             payload_input.context.selected_task.as_deref(),
             Some("task-123")
         );
+    }
+
+    fn hook_mutation_config(enabled: bool) -> HookMutationConfig {
+        HookMutationConfig {
+            enabled,
+            format: Some("json".to_string()),
+            extra: std::collections::HashMap::new(),
+        }
+    }
+
+    fn json_object(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        value.as_object().cloned().expect("json object")
+    }
+
+    #[test]
+    fn test_parse_hook_mutation_stdout_skips_when_disabled() {
+        let outcome =
+            parse_hook_mutation_stdout(&HookMutationConfig::default(), "env-guard", "not-json");
+
+        assert_eq!(outcome, HookMutationParseOutcome::Disabled);
+    }
+
+    #[test]
+    fn test_parse_hook_mutation_stdout_accepts_metadata_only_payload_and_namespaces_by_hook() {
+        let outcome = parse_hook_mutation_stdout(
+            &hook_mutation_config(true),
+            "env-guard",
+            r#"{"metadata":{"risk_score":0.72,"gates":["policy_check"]}}"#,
+        );
+
+        let HookMutationParseOutcome::Parsed {
+            namespaced_metadata,
+        } = outcome
+        else {
+            panic!("expected parsed mutation payload");
+        };
+
+        assert_eq!(
+            serde_json::Value::Object(namespaced_metadata),
+            serde_json::json!({
+                "hook_metadata": {
+                    "env-guard": {
+                        "risk_score": 0.72,
+                        "gates": ["policy_check"]
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_hook_mutation_stdout_rejects_non_json_payload_when_enabled() {
+        let outcome = parse_hook_mutation_stdout(&hook_mutation_config(true), "env-guard", "oops");
+
+        let HookMutationParseOutcome::Invalid(HookMutationParseError::InvalidJson { message }) =
+            outcome
+        else {
+            panic!("expected invalid-json mutation parse outcome");
+        };
+
+        assert!(message.contains("valid JSON"));
+    }
+
+    #[test]
+    fn test_parse_hook_mutation_stdout_rejects_non_metadata_payload_shape() {
+        let outcome = parse_hook_mutation_stdout(
+            &hook_mutation_config(true),
+            "env-guard",
+            r#"{"metadata":{"risk_score":0.72},"prompt":"inject"}"#,
+        );
+
+        let HookMutationParseOutcome::Invalid(HookMutationParseError::InvalidSchema { message }) =
+            outcome
+        else {
+            panic!("expected invalid-schema mutation parse outcome");
+        };
+
+        assert!(message.contains("supports only"));
+    }
+
+    #[test]
+    fn test_merge_hook_metadata_namespace_merges_multiple_hook_entries() {
+        let mut accumulated_metadata = serde_json::Map::new();
+        accumulated_metadata.insert("upstream".to_string(), serde_json::json!("preserved"));
+
+        merge_hook_metadata_namespace(
+            &mut accumulated_metadata,
+            "env-guard",
+            json_object(serde_json::json!({"risk_score": 0.72})),
+        )
+        .expect("merge env-guard metadata");
+
+        merge_hook_metadata_namespace(
+            &mut accumulated_metadata,
+            "policy-gate",
+            json_object(serde_json::json!({"status": "pass"})),
+        )
+        .expect("merge policy-gate metadata");
+
+        assert_eq!(
+            accumulated_metadata["upstream"],
+            serde_json::json!("preserved")
+        );
+        assert_eq!(
+            accumulated_metadata["hook_metadata"]["env-guard"]["risk_score"],
+            serde_json::json!(0.72)
+        );
+        assert_eq!(
+            accumulated_metadata["hook_metadata"]["policy-gate"]["status"],
+            serde_json::json!("pass")
+        );
+    }
+
+    #[test]
+    fn test_merge_hook_metadata_namespace_rejects_non_object_namespace_value() {
+        let mut accumulated_metadata = serde_json::Map::new();
+        accumulated_metadata.insert(
+            "hook_metadata".to_string(),
+            serde_json::Value::String("invalid".to_string()),
+        );
+
+        let merge_result = merge_hook_metadata_namespace(
+            &mut accumulated_metadata,
+            "env-guard",
+            json_object(serde_json::json!({"risk_score": 0.72})),
+        );
+
+        assert!(matches!(
+            merge_result,
+            Err(HookMutationParseError::InvalidSchema { message })
+            if message.contains("must be a JSON object")
+        ));
     }
 
     #[test]

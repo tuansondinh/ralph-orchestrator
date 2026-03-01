@@ -1,8 +1,7 @@
 //! Hooks BDD runner with deterministic CI-safe acceptance evaluation.
 //!
 //! Current rollout status:
-//! - AC-01..AC-12: deterministic source-evidence checks (green in `--mock` mode).
-//! - AC-13..AC-18: intentionally pending (red) until later Step 13 slices.
+//! - AC-01..AC-18: deterministic source-evidence checks (green in `--mock` mode).
 //! - feature discovery from `features/hooks/*.feature`
 //! - stable AC-tagged failure output for traceability
 
@@ -15,9 +14,9 @@ use thiserror::Error;
 const HOOKS_FEATURE_DIR_WORKSPACE: &str = "crates/ralph-e2e/features/hooks";
 const HOOKS_FEATURE_DIR_CRATE: &str = "features/hooks";
 
-const GREEN_ACCEPTANCE_IDS: [&str; 12] = [
+const GREEN_ACCEPTANCE_IDS: [&str; 18] = [
     "AC-01", "AC-02", "AC-03", "AC-04", "AC-05", "AC-06", "AC-07", "AC-08", "AC-09", "AC-10",
-    "AC-11", "AC-12",
+    "AC-11", "AC-12", "AC-13", "AC-14", "AC-15", "AC-16", "AC-17", "AC-18",
 ];
 const REQUIRED_V1_PHASE_EVENTS: [&str; 12] = [
     "pre.loop.start",
@@ -264,8 +263,7 @@ pub fn discover_hooks_bdd_scenarios(
 
 /// Executes discovered hooks BDD scenarios.
 ///
-/// AC-01..AC-12 execute deterministic source-evidence checks in CI-safe mode,
-/// while AC-13..AC-18 remain intentionally pending for later Step 13 slices.
+/// AC-01..AC-18 execute deterministic source-evidence checks in CI-safe mode.
 pub fn run_hooks_bdd_suite(config: &HooksBddConfig) -> Result<HooksBddRunResults, HooksBddError> {
     let scenarios = discover_hooks_bdd_scenarios(config.filter.as_deref())?;
     let mut results = Vec::with_capacity(scenarios.len());
@@ -526,6 +524,12 @@ fn evaluate_acceptance_criterion(
         "AC-10" => evaluate_ac_10(evidence_cache),
         "AC-11" => evaluate_ac_11(evidence_cache),
         "AC-12" => evaluate_ac_12(evidence_cache),
+        "AC-13" => evaluate_ac_13(evidence_cache),
+        "AC-14" => evaluate_ac_14(evidence_cache),
+        "AC-15" => evaluate_ac_15(evidence_cache),
+        "AC-16" => evaluate_ac_16(evidence_cache),
+        "AC-17" => evaluate_ac_17(evidence_cache),
+        "AC-18" => evaluate_ac_18(evidence_cache),
         _ => Err(pending_acceptance_message(criterion_id)),
     }
 }
@@ -895,6 +899,229 @@ fn evaluate_ac_12(evidence_cache: &mut SourceEvidenceCache) -> Result<String, St
     )
 }
 
+fn evaluate_ac_13(evidence_cache: &mut SourceEvidenceCache) -> Result<String, String> {
+    verify_source_evidence(
+        "AC-13",
+        evidence_cache,
+        &[
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "if !mutate.enabled {",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "return HookMutationParseOutcome::Disabled;",
+            ),
+            (
+                "crates/ralph-core/src/config.rs",
+                "mutation settings require mutate.enabled: true",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "fn test_ac13_mutation_disabled_json_output_is_inert_for_accumulator_and_downstream_payloads()",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "fn test_parse_hook_mutation_stdout_skips_when_disabled()",
+            ),
+        ],
+        "mutation parsing is explicit opt-in and disabled-mode remains inert",
+    )
+}
+
+fn evaluate_ac_14(evidence_cache: &mut SourceEvidenceCache) -> Result<String, String> {
+    verify_source_evidence(
+        "AC-14",
+        evidence_cache,
+        &[
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "const HOOK_MUTATION_PAYLOAD_METADATA_KEY: &str = \"metadata\";",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "if payload_object.len() != 1 || !payload_object.contains_key(HOOK_MUTATION_PAYLOAD_METADATA_KEY)",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "message: \"mutation payload key 'metadata' must contain a JSON object\".to_string(),",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "fn test_ac14_mutation_enabled_updates_only_namespaced_metadata_in_downstream_payloads()",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "assert!(!payload_object.contains_key(\"prompt\"));",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "assert!(!payload_object.contains_key(\"events\"));",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "assert!(!payload_object.contains_key(\"config\"));",
+            ),
+        ],
+        "mutation surface remains metadata-only and downstream payloads stay scoped",
+    )
+}
+
+fn evaluate_ac_15(evidence_cache: &mut SourceEvidenceCache) -> Result<String, String> {
+    verify_source_evidence(
+        "AC-15",
+        evidence_cache,
+        &[
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "let parsed = match serde_json::from_str::<serde_json::Value>(stdout.trim()) {",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "message: format!(\"mutation stdout is not valid JSON: {error}\"),",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "Some(HookDispatchFailure::InvalidMutationOutput {",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_warn_continues_through_block_gate()",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_block_surfaces_invalid_output_reason()",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_suspend_uses_wait_for_resume_gate()",
+            ),
+        ],
+        "invalid non-JSON mutation output maps into lifecycle on_error dispositions",
+    )
+}
+
+fn evaluate_ac_16(evidence_cache: &mut SourceEvidenceCache) -> Result<String, String> {
+    verify_source_evidence(
+        "AC-16",
+        evidence_cache,
+        &[
+            (
+                "crates/ralph-core/src/diagnostics/hook_runs.rs",
+                "pub struct HookRunTelemetryEntry {",
+            ),
+            (
+                "crates/ralph-core/src/diagnostics/hook_runs.rs",
+                "pub disposition: HookDisposition,",
+            ),
+            (
+                "crates/ralph-core/src/diagnostics/hook_runs.rs",
+                "pub suspend_mode: HookSuspendMode,",
+            ),
+            (
+                "crates/ralph-core/src/diagnostics/hook_runs.rs",
+                "pub retry_attempt: u32,",
+            ),
+            (
+                "crates/ralph-core/src/diagnostics/hook_runs.rs",
+                "pub retry_max_attempts: u32,",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "event_loop.log_hook_run_telemetry(HookRunTelemetryEntry::from_run_result(",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "fn test_dispatch_phase_event_hooks_retry_backoff_recovers_before_exhaustion()",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "fn test_dispatch_phase_event_hooks_wait_then_retry_recovers_after_resume()",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "assert_eq!(telemetry_entries.len(), 3);",
+            ),
+            (
+                "crates/ralph-cli/src/loop_runner.rs",
+                "assert_eq!(telemetry_entries.len(), 2);",
+            ),
+        ],
+        "hook-run telemetry captures disposition, suspend policy, and retry attempt lifecycle",
+    )
+}
+
+fn evaluate_ac_17(evidence_cache: &mut SourceEvidenceCache) -> Result<String, String> {
+    verify_source_evidence(
+        "AC-17",
+        evidence_cache,
+        &[
+            ("crates/ralph-cli/src/main.rs", "Hooks(hooks::HooksArgs),"),
+            (
+                "crates/ralph-cli/src/main.rs",
+                "Some(Commands::Hooks(args)) => {",
+            ),
+            (
+                "crates/ralph-cli/src/hooks.rs",
+                "HooksCommands::Validate(validate_args) => {",
+            ),
+            (
+                "crates/ralph-cli/src/hooks.rs",
+                "report.push_diagnostic(\"hooks.semantic\", error.to_string(), None, None, None);",
+            ),
+            (
+                "crates/ralph-cli/src/hooks.rs",
+                "\"hooks.command_resolvable\",",
+            ),
+            (
+                "crates/ralph-cli/src/hooks.rs",
+                "Fix: ensure command exists and is executable, or invoke the script through an interpreter (for example: ['bash', 'script.sh']).",
+            ),
+            ("crates/ralph-cli/src/hooks.rs", "if !report.pass {"),
+            ("crates/ralph-cli/src/hooks.rs", "std::process::exit(1);"),
+        ],
+        "hooks validate command is exposed, routed, and emits actionable diagnostics",
+    )
+}
+
+fn evaluate_ac_18(evidence_cache: &mut SourceEvidenceCache) -> Result<String, String> {
+    verify_source_evidence(
+        "AC-18",
+        evidence_cache,
+        &[
+            (
+                "crates/ralph-core/src/preflight.rs",
+                "Box::new(HooksValidationCheck),",
+            ),
+            (
+                "crates/ralph-core/src/preflight.rs",
+                "fn default_checks_include_hooks_check_name()",
+            ),
+            (
+                "crates/ralph-core/src/preflight.rs",
+                "assert!(check_names.contains(&\"hooks\"));",
+            ),
+            (
+                "crates/ralph-cli/src/main.rs",
+                "let runner = PreflightRunner::default_checks();",
+            ),
+            (
+                "crates/ralph-cli/src/main.rs",
+                "if skip_preflight || !config.features.preflight.enabled {",
+            ),
+            (
+                "crates/ralph-cli/src/main.rs",
+                "fn test_auto_preflight_skip_list_can_omit_hooks_check_failures()",
+            ),
+            (
+                "crates/ralph-cli/src/main.rs",
+                "config.features.preflight.skip = vec![\"hooks\".to_string()];",
+            ),
+        ],
+        "hooks validation is integrated into automatic preflight with explicit skip controls",
+    )
+}
+
 fn verify_source_evidence(
     criterion_id: &str,
     evidence_cache: &mut SourceEvidenceCache,
@@ -935,9 +1162,6 @@ fn record_source_evidence(
 
 fn pending_acceptance_message(criterion_id: &str) -> String {
     match parse_acceptance_number(criterion_id) {
-        Some(13..=18) => {
-            format!("pending: {criterion_id} remains red for Step 13.3 (AC-13..AC-18)")
-        }
         Some(_) if !GREEN_ACCEPTANCE_IDS.contains(&criterion_id) => {
             format!("pending: {criterion_id} has no green evaluator yet")
         }
@@ -1048,28 +1272,29 @@ mod tests {
     }
 
     #[test]
-    fn run_hooks_bdd_suite_passes_ac_01_to_ac_12_slice_and_keeps_rest_pending() {
+    fn run_hooks_bdd_suite_passes_ac_01_to_ac_18_slice_in_ci_safe_mode() {
         let config = HooksBddConfig::new(None, true);
         let results = run_hooks_bdd_suite(&config).expect("suite should run");
 
         assert_eq!(results.total_count(), 18);
-        assert_eq!(results.passed_count(), 12);
-        assert_eq!(results.failed_count(), 6);
-
-        let ac_12 = results
-            .results
-            .iter()
-            .find(|result| result.scenario_id == "AC-12")
-            .expect("AC-12 result should exist");
-        assert!(ac_12.passed);
+        assert_eq!(results.passed_count(), 18);
+        assert_eq!(results.failed_count(), 0);
 
         let ac_13 = results
             .results
             .iter()
             .find(|result| result.scenario_id == "AC-13")
             .expect("AC-13 result should exist");
-        assert!(!ac_13.passed);
-        assert!(ac_13.message.contains("Step 13.3"));
+        assert!(ac_13.passed);
+        assert!(ac_13.message.contains("AC-13 verified"));
+
+        let ac_18 = results
+            .results
+            .iter()
+            .find(|result| result.scenario_id == "AC-18")
+            .expect("AC-18 result should exist");
+        assert!(ac_18.passed);
+        assert!(ac_18.message.contains("AC-18 verified"));
     }
 
     #[test]

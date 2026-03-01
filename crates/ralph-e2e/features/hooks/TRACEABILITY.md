@@ -1,49 +1,54 @@
-# Hooks BDD AC Traceability Skeleton
+# Hooks BDD AC Traceability Matrix (Step 13 Final)
 
-Initial `AC-01..AC-18` mapping skeleton for the hooks lifecycle feature.
+This document is the finalized Step 13 traceability artifact for:
 
-Sources:
-- `specs/add-hooks-to-ralph-orchestrator-lifecycle/plan.md` (Step 0 / subtask 0a)
-- `specs/add-hooks-to-ralph-orchestrator-lifecycle/design.md` (Acceptance Criteria + Cucumber mapping requirements)
+- `specs/add-hooks-to-ralph-orchestrator-lifecycle/plan.md`
+- `specs/add-hooks-to-ralph-orchestrator-lifecycle/design.md`
 
-## Mapping Table (Skeleton)
+It maps every acceptance criterion (`AC-01..AC-18`) to:
 
-| AC ID | Acceptance intent | Planned feature file | Planned scenario title (stable AC label) | Status |
+1. A stable, AC-labeled BDD scenario in `crates/ralph-e2e/features/hooks/*.feature`
+2. A deterministic evaluator in `crates/ralph-e2e/src/hooks_bdd.rs`
+3. Green CI-safe execution (`--hooks-bdd --mock`)
+
+## AC Mapping Matrix
+
+| AC ID | Acceptance intent | Feature scenario (stable title) | Deterministic evaluator | CI-safe status |
 |---|---|---|---|---|
-| AC-01 | Per-project scope only | `hooks/scope-and-dispatch.feature` | `Scenario: AC-01 Per-project scope only` | planned |
-| AC-02 | Mandatory lifecycle events supported | `hooks/scope-and-dispatch.feature` | `Scenario: AC-02 Mandatory lifecycle events supported` | planned |
-| AC-03 | Pre/post phase support | `hooks/scope-and-dispatch.feature` | `Scenario: AC-03 Pre/post phase support` | planned |
-| AC-04 | Deterministic ordering | `hooks/scope-and-dispatch.feature` | `Scenario: AC-04 Deterministic ordering` | planned |
-| AC-05 | JSON stdin contract | `hooks/executor-safeguards.feature` | `Scenario: AC-05 JSON stdin contract` | planned |
-| AC-06 | Timeout safeguard | `hooks/executor-safeguards.feature` | `Scenario: AC-06 Timeout safeguard` | planned |
-| AC-07 | Output-size safeguard | `hooks/executor-safeguards.feature` | `Scenario: AC-07 Output-size safeguard` | planned |
-| AC-08 | Per-hook warn policy | `hooks/error-dispositions.feature` | `Scenario: AC-08 Per-hook warn policy` | planned |
-| AC-09 | Per-hook block policy | `hooks/error-dispositions.feature` | `Scenario: AC-09 Per-hook block policy` | planned |
-| AC-10 | Suspend default mode | `hooks/error-dispositions.feature` | `Scenario: AC-10 Suspend default mode` | planned |
-| AC-11 | CLI resume path | `hooks/error-dispositions.feature` | `Scenario: AC-11 CLI resume path` | planned |
-| AC-12 | Resume idempotency | `hooks/error-dispositions.feature` | `Scenario: AC-12 Resume idempotency` | planned |
-| AC-13 | Mutation opt-in only | `hooks/metadata-mutation.feature` | `Scenario: AC-13 Mutation opt-in only` | planned |
-| AC-14 | Metadata-only mutation surface | `hooks/metadata-mutation.feature` | `Scenario: AC-14 Metadata-only mutation surface` | planned |
-| AC-15 | JSON-only mutation format | `hooks/metadata-mutation.feature` | `Scenario: AC-15 JSON-only mutation format` | planned |
-| AC-16 | Hook telemetry completeness | `hooks/telemetry-and-validation.feature` | `Scenario: AC-16 Hook telemetry completeness` | planned |
-| AC-17 | Validation command | `hooks/telemetry-and-validation.feature` | `Scenario: AC-17 Validation command` | planned |
-| AC-18 | Preflight integration | `hooks/telemetry-and-validation.feature` | `Scenario: AC-18 Preflight integration` | planned |
+| AC-01 | Per-project scope only | `crates/ralph-e2e/features/hooks/scope-and-dispatch.feature` → `Scenario: AC-01 Per-project scope only` | `evaluate_ac_01` | pass |
+| AC-02 | Mandatory lifecycle events supported | `crates/ralph-e2e/features/hooks/scope-and-dispatch.feature` → `Scenario: AC-02 Mandatory lifecycle events supported` | `evaluate_ac_02` | pass |
+| AC-03 | Pre/post phase support | `crates/ralph-e2e/features/hooks/scope-and-dispatch.feature` → `Scenario: AC-03 Pre/post phase support` | `evaluate_ac_03` | pass |
+| AC-04 | Deterministic ordering | `crates/ralph-e2e/features/hooks/scope-and-dispatch.feature` → `Scenario: AC-04 Deterministic ordering` | `evaluate_ac_04` | pass |
+| AC-05 | JSON stdin contract | `crates/ralph-e2e/features/hooks/executor-safeguards.feature` → `Scenario: AC-05 JSON stdin contract` | `evaluate_ac_05` | pass |
+| AC-06 | Timeout safeguard | `crates/ralph-e2e/features/hooks/executor-safeguards.feature` → `Scenario: AC-06 Timeout safeguard` | `evaluate_ac_06` | pass |
+| AC-07 | Output-size safeguard | `crates/ralph-e2e/features/hooks/executor-safeguards.feature` → `Scenario: AC-07 Output-size safeguard` | `evaluate_ac_07` | pass |
+| AC-08 | Per-hook warn policy | `crates/ralph-e2e/features/hooks/error-dispositions.feature` → `Scenario: AC-08 Per-hook warn policy` | `evaluate_ac_08` | pass |
+| AC-09 | Per-hook block policy | `crates/ralph-e2e/features/hooks/error-dispositions.feature` → `Scenario: AC-09 Per-hook block policy` | `evaluate_ac_09` | pass |
+| AC-10 | Suspend default mode | `crates/ralph-e2e/features/hooks/error-dispositions.feature` → `Scenario: AC-10 Suspend default mode` | `evaluate_ac_10` | pass |
+| AC-11 | CLI resume path | `crates/ralph-e2e/features/hooks/error-dispositions.feature` → `Scenario: AC-11 CLI resume path` | `evaluate_ac_11` | pass |
+| AC-12 | Resume idempotency | `crates/ralph-e2e/features/hooks/error-dispositions.feature` → `Scenario: AC-12 Resume idempotency` | `evaluate_ac_12` | pass |
+| AC-13 | Mutation opt-in only | `crates/ralph-e2e/features/hooks/metadata-mutation.feature` → `Scenario: AC-13 Mutation opt-in only` | `evaluate_ac_13` | pass |
+| AC-14 | Metadata-only mutation surface | `crates/ralph-e2e/features/hooks/metadata-mutation.feature` → `Scenario: AC-14 Metadata-only mutation surface` | `evaluate_ac_14` | pass |
+| AC-15 | JSON-only mutation format | `crates/ralph-e2e/features/hooks/metadata-mutation.feature` → `Scenario: AC-15 JSON-only mutation format` | `evaluate_ac_15` | pass |
+| AC-16 | Hook telemetry completeness | `crates/ralph-e2e/features/hooks/telemetry-and-validation.feature` → `Scenario: AC-16 Hook telemetry completeness` | `evaluate_ac_16` | pass |
+| AC-17 | Validation command | `crates/ralph-e2e/features/hooks/telemetry-and-validation.feature` → `Scenario: AC-17 Validation command` | `evaluate_ac_17` | pass |
+| AC-18 | Preflight integration | `crates/ralph-e2e/features/hooks/telemetry-and-validation.feature` → `Scenario: AC-18 Preflight integration` | `evaluate_ac_18` | pass |
+
+## CI-safe Acceptance Evidence (Current Green Baseline)
+
+Full suite:
+
+- Command: `cargo run -p ralph-e2e -- --hooks-bdd --mock --quiet`
+- Deterministic summary: `Summary: 18 passed, 0 failed, 18 total`
+- Exit: `0`
+
+Focused reproducibility check:
+
+- Command: `cargo run -p ralph-e2e -- --hooks-bdd --mock --filter AC-18`
+- Deterministic summary: `Summary: 1 passed, 0 failed, 1 total`
+- Exit: `0`
 
 ## Notes
 
-- Step 0.1 creates only the mapping skeleton; Step 0.2 will add `.feature` files + scenario placeholders.
-- Scenario titles intentionally embed stable AC labels for CI traceability.
-
-## Step 0.4 Red Baseline (CI-safe)
-
-- Command:
-  - `cargo run -p ralph-e2e -- --hooks-bdd --mock`
-- Exit status:
-  - `1` (expected red baseline while hooks implementation is pending)
-- Deterministic summary:
-  - `Summary: 0 passed, 18 failed, 18 total`
-- Reproducibility check:
-  - `cargo run -p ralph-e2e -- --hooks-bdd --mock --quiet`
-  - `Summary: 0 passed, 18 failed, 18 total`
-- Failure shape:
-  - All AC-labeled placeholders (`AC-01..AC-18`) fail with `pending: <AC-ID> placeholder scenario intentionally red until implementation`.
+- This matrix supersedes the initial Step 0 skeleton and red placeholder baseline.
+- CI and delivery-gate review should treat this file as the single traceability reference for hooks AC coverage.

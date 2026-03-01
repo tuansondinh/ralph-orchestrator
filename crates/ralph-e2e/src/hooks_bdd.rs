@@ -654,11 +654,36 @@ fn evaluate_ac_04(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddSc
 
 fn evaluate_ac_05(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
     evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        // AC-05: Verify JSON stdin contract - hooks receive valid JSON on stdin
-        // Source: crates/ralph-core/src/hooks/executor.rs:34-41, 237-340
-        // HookExecutorRequest has stdin_payload: serde_json::Value
-        // write_stdin_payload() serializes and writes JSON to hook stdin
-        // Tests verify: run_writes_json_payload_to_hook_stdin
+        assert_workspace_source_contains(
+            "crates/ralph-core/src/hooks/executor.rs",
+            &[
+                (
+                    "HookRunRequest carries JSON stdin payload contract",
+                    "pub stdin_payload: serde_json::Value,",
+                ),
+                (
+                    "executor configures child stdin as piped",
+                    "command.stdin(Stdio::piped());",
+                ),
+                (
+                    "executor writes stdin payload before waiting for completion",
+                    "write_stdin_payload(",
+                ),
+                (
+                    "stdin payload is serialized as JSON bytes",
+                    "serde_json::to_vec(stdin_payload)",
+                ),
+                (
+                    "serialized payload bytes are written to child stdin",
+                    "stdin.write_all(&payload)",
+                ),
+                (
+                    "unit test verifies JSON payload delivery to stdin",
+                    "fn run_writes_json_payload_to_hook_stdin() {",
+                ),
+            ],
+        )?;
+
         Ok(())
     })
 }
@@ -669,28 +694,76 @@ fn evaluate_ac_05(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddSc
 
 fn evaluate_ac_06(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
     evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        // AC-06: Verify timeout safeguard - hooks with timeout_seconds are terminated
-        // Source: crates/ralph-core/src/hooks/executor.rs:35, 353-392
-        // HookExecutorRequest has timeout_seconds: u64
-        // run_with_timeout() enforces timeout and marks timed_out: true
-        // Tests verify: run_marks_timed_out_when_command_exceeds_timeout
+        assert_workspace_source_contains(
+            "crates/ralph-core/src/hooks/executor.rs",
+            &[
+                (
+                    "HookRunRequest carries per-hook timeout guardrail",
+                    "pub timeout_seconds: u64,",
+                ),
+                (
+                    "run path forwards request timeout into completion wait",
+                    "request.timeout_seconds,",
+                ),
+                (
+                    "wait loop derives timeout duration budget",
+                    "let timeout = Duration::from_secs(timeout_seconds);",
+                ),
+                (
+                    "timeout path terminates long-running process",
+                    "let status = terminate_for_timeout(",
+                ),
+                (
+                    "executor captures timed_out result from wait path",
+                    "let (status, timed_out) = wait_for_completion(",
+                ),
+                (
+                    "unit test verifies timeout safeguard behavior",
+                    "fn run_marks_timed_out_when_command_exceeds_timeout() {",
+                ),
+            ],
+        )?;
+
         Ok(())
     })
 }
 
 // =============================================================================
-// AC-07..AC-12: Implemented in prior steps
-// AC-13..AC-15: Implemented in prior steps
-// AC-16..AC-18: Implemented (Step 13.7)
+// AC-07: Output truncation safeguard
 // =============================================================================
 
 fn evaluate_ac_07(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
     evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        // AC-07: Verify output-size safeguard - stdout/stderr truncated at max_output_bytes
-        // Source: crates/ralph-core/src/hooks/executor.rs:38, 261-263, 421-496
-        // HookExecutorRequest has max_output_bytes: u64
-        // spawn_stream_collector() enforces limit and marks truncated: true
-        // Tests verify: run_truncates_stdout_and_stderr_at_max_output_bytes
+        assert_workspace_source_contains(
+            "crates/ralph-core/src/hooks/executor.rs",
+            &[
+                (
+                    "HookRunRequest carries max_output_bytes safeguard",
+                    "pub max_output_bytes: u64,",
+                ),
+                (
+                    "stdout collector enforces configured output byte limit",
+                    "spawn_stream_collector(child.stdout.take(), request.max_output_bytes);",
+                ),
+                (
+                    "stderr collector enforces configured output byte limit",
+                    "spawn_stream_collector(child.stderr.take(), request.max_output_bytes);",
+                ),
+                (
+                    "stream capture derives per-stream capture limit from max_output_bytes",
+                    "let capture_limit = usize::try_from(max_output_bytes).unwrap_or(usize::MAX);",
+                ),
+                (
+                    "capture path marks output as truncated when bytes exceed limit",
+                    "truncated = true;",
+                ),
+                (
+                    "unit test verifies stdout/stderr truncation behavior",
+                    "fn run_truncates_stdout_and_stderr_at_max_output_bytes() {",
+                ),
+            ],
+        )?;
+
         Ok(())
     })
 }

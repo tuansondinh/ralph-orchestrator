@@ -1653,8 +1653,47 @@ mod tests {
         )
         .expect_err("missing snippet should fail");
 
+        assert!(error.contains("source evidence assertion failed"));
         assert!(error.contains("crates/ralph-core/src/config.rs"));
         assert!(error.contains("nonexistent marker"));
+        assert!(error.contains("__never_present_marker_for_hooks_bdd_test__"));
+    }
+
+    #[test]
+    fn evaluate_green_acceptance_reports_actionable_missing_evidence_failures() {
+        let scenario = HooksBddScenario {
+            scenario_id: "AC-01".to_string(),
+            scenario_name: "AC-01 synthetic missing evidence".to_string(),
+            feature_file: "hooks/scope-and-dispatch.feature".to_string(),
+            tags: vec!["AC-01".to_string()],
+            steps: vec![],
+        };
+
+        let result =
+            evaluate_green_acceptance(&scenario, true, validate_acceptance_context, || {
+                assert_required_source_snippets(
+                    "crates/ralph-core/src/config.rs",
+                    "pub hooks: HooksConfig,\n",
+                    &[(
+                        "hooks defaults preserve project scope",
+                        "hooks: HooksConfig::default(),",
+                    )],
+                )
+            });
+
+        assert!(!result.passed);
+        assert_eq!(result.scenario_id, "AC-01");
+        assert!(
+            result
+                .message
+                .contains("source evidence assertion failed for crates/ralph-core/src/config.rs")
+        );
+        assert!(
+            result
+                .message
+                .contains("hooks defaults preserve project scope")
+        );
+        assert!(result.message.contains("hooks: HooksConfig::default(),"));
     }
 
     #[test]

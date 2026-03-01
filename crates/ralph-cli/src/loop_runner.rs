@@ -4233,6 +4233,22 @@ printf '%s|%s\n' "$1" "$phase" >> "$2""#
     }
 
     #[cfg(unix)]
+    fn payload_recording_hook(name: &str, log_path: &Path) -> ralph_core::HookSpec {
+        hook_spec_with_command(
+            name,
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                r#"payload="$(cat)"
+printf '%s\n' "$payload" >> "$1""#
+                    .to_string(),
+                "hook-payload-recorder".to_string(),
+                log_path.to_string_lossy().into_owned(),
+            ],
+        )
+    }
+
+    #[cfg(unix)]
     fn hook_engine_with_events(
         events: std::collections::HashMap<HookPhaseEvent, Vec<ralph_core::HookSpec>>,
     ) -> HookEngine {
@@ -4249,6 +4265,15 @@ printf '%s|%s\n' "$1" "$phase" >> "$2""#
         let mut config = RalphConfig::default();
         config.core.workspace_root = workspace_root.to_path_buf();
         EventLoop::new(config)
+    }
+
+    #[cfg(unix)]
+    fn dispatch_test_event_loop_with_context(workspace_root: &Path) -> (EventLoop, LoopContext) {
+        let mut config = RalphConfig::default();
+        config.core.workspace_root = workspace_root.to_path_buf();
+        let context = LoopContext::primary(workspace_root.to_path_buf());
+        let event_loop = EventLoop::with_context(config, context.clone());
+        (event_loop, context)
     }
 
     #[cfg(unix)]
@@ -4288,6 +4313,16 @@ printf '%s|%s\n' "$1" "$phase" >> "$2""#
             .expect("read hook log")
             .lines()
             .map(str::to_string)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn read_hook_payload_log(log_path: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(log_path)
+            .expect("read hook payload log")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("parse hook payload JSON"))
             .collect()
     }
 
@@ -4782,6 +4817,390 @@ printf '%s|%s\n' "$1" "$phase" >> "$2""#
         assert!(post_iteration_start_message.contains("block-post-iteration-start"));
         assert!(post_iteration_start_message.contains("post.iteration.start"));
         assert!(post_iteration_start_message.contains("hook exited with code 31"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_plan_created_lifecycle_hooks_dispatch_only_for_semantic_plan_batches() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (mut event_loop, loop_ctx) = dispatch_test_event_loop_with_context(temp_dir.path());
+        let events_path = loop_ctx.events_path();
+        std::fs::create_dir_all(events_path.parent().expect("events path parent"))
+            .expect("create events directory");
+
+        let mut events_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&events_path)
+            .expect("open events file");
+        writeln!(
+            events_file,
+            r#"{{"topic":"task.start","payload":"noop","ts":"2024-01-01T00:00:00Z"}}"#
+        )
+        .expect("write non-plan event");
+        events_file.flush().expect("flush non-plan event");
+
+        let log_path = temp_dir.path().join("plan-created-hook-payloads.jsonl");
+        let mut events = std::collections::HashMap::new();
+        events.insert(
+            HookPhaseEvent::PrePlanCreated,
+            vec![payload_recording_hook("pre-plan-created", &log_path)],
+        );
+        events.insert(
+            HookPhaseEvent::PostPlanCreated,
+            vec![payload_recording_hook("post-plan-created", &log_path)],
+        );
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+
+        assert!(
+            !event_loop
+                .has_pending_plan_events_in_jsonl()
+                .expect("peek non-plan events"),
+            "non-plan batches must not trigger pre.plan.created"
+        );
+
+        let processed_non_plan = event_loop
+            .process_events_from_jsonl()
+            .expect("process non-plan batch");
+        assert!(processed_non_plan.had_events);
+        assert!(
+            !processed_non_plan.had_plan_events,
+            "non-plan batches must not trigger post.plan.created"
+        );
+        assert!(
+            !log_path.exists(),
+            "plan.created hooks should not run for non-plan batches"
+        );
+
+        writeln!(
+            events_file,
+            r#"{{"topic":"plan.created","payload":"ready","ts":"2024-01-01T00:00:01Z"}}"#
+        )
+        .expect("write plan event");
+        events_file.flush().expect("flush plan event");
+
+        assert!(
+            event_loop
+                .has_pending_plan_events_in_jsonl()
+                .expect("peek plan events"),
+            "plan.* batches should trigger pre.plan.created"
+        );
+
+        let pre_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PrePlanCreated,
+            build_plan_created_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                event_loop.state().iteration,
+                Some("planner".to_string()),
+                Some("planner".to_string()),
+                None,
+            ),
+        );
+        assert!(fail_if_blocking_plan_created_outcomes(&pre_outcomes).is_ok());
+
+        let processed_plan = event_loop
+            .process_events_from_jsonl()
+            .expect("process plan batch");
+        assert!(processed_plan.had_events);
+        assert!(
+            processed_plan.had_plan_events,
+            "plan.* batches should trigger post.plan.created"
+        );
+
+        let post_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PostPlanCreated,
+            build_plan_created_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                event_loop.state().iteration,
+                Some("planner".to_string()),
+                Some("planner".to_string()),
+                None,
+            ),
+        );
+        assert!(fail_if_blocking_plan_created_outcomes(&post_outcomes).is_ok());
+
+        let payloads = read_hook_payload_log(&log_path);
+        let observed_phases: Vec<&str> = payloads
+            .iter()
+            .map(|payload| {
+                payload["phase_event"]
+                    .as_str()
+                    .expect("phase_event should be present")
+            })
+            .collect();
+
+        assert_eq!(
+            observed_phases,
+            vec!["pre.plan.created", "post.plan.created"],
+            "plan.created hooks should dispatch exactly once around semantic plan batches"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_human_interact_lifecycle_hooks_dispatch_with_post_outcome_context() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (mut event_loop, loop_ctx) = dispatch_test_event_loop_with_context(temp_dir.path());
+        let events_path = loop_ctx.events_path();
+        std::fs::create_dir_all(events_path.parent().expect("events path parent"))
+            .expect("create events directory");
+
+        let mut events_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&events_path)
+            .expect("open events file");
+        writeln!(
+            events_file,
+            r#"{{"topic":"human.interact","payload":"Need approval?","ts":"2024-01-01T00:00:00Z"}}"#
+        )
+        .expect("write human.interact event");
+        events_file.flush().expect("flush human.interact event");
+
+        let log_path = temp_dir.path().join("human-interact-hook-payloads.jsonl");
+        let mut events = std::collections::HashMap::new();
+        events.insert(
+            HookPhaseEvent::PreHumanInteract,
+            vec![payload_recording_hook("pre-human-interact", &log_path)],
+        );
+        events.insert(
+            HookPhaseEvent::PostHumanInteract,
+            vec![payload_recording_hook("post-human-interact", &log_path)],
+        );
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+
+        let pending_context = event_loop
+            .pending_human_interact_context_in_jsonl()
+            .expect("peek pending human.interact context")
+            .expect("pending human.interact context should exist");
+        assert_eq!(
+            pending_context["question"],
+            serde_json::json!("Need approval?")
+        );
+        assert!(
+            pending_context.get("outcome").is_none(),
+            "pre human.interact context should not include an outcome"
+        );
+
+        let pre_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreHumanInteract,
+            build_human_interact_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                event_loop.state().iteration,
+                Some("planner".to_string()),
+                Some("planner".to_string()),
+                None,
+                Some(pending_context),
+            ),
+        );
+        assert!(fail_if_blocking_human_interact_outcomes(&pre_outcomes).is_ok());
+
+        let processed = event_loop
+            .process_events_from_jsonl()
+            .expect("process human.interact batch");
+        let post_context = processed
+            .human_interact_context
+            .expect("processed context should include human.interact outcome");
+        assert_eq!(
+            post_context["question"],
+            serde_json::json!("Need approval?")
+        );
+        assert_eq!(
+            post_context["outcome"],
+            serde_json::json!("no_robot_service")
+        );
+
+        let post_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PostHumanInteract,
+            build_human_interact_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                event_loop.state().iteration,
+                Some("planner".to_string()),
+                Some("planner".to_string()),
+                None,
+                Some(post_context),
+            ),
+        );
+        assert!(fail_if_blocking_human_interact_outcomes(&post_outcomes).is_ok());
+
+        let payloads = read_hook_payload_log(&log_path);
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(
+            payloads[0]["phase_event"],
+            serde_json::json!("pre.human.interact")
+        );
+        assert_eq!(
+            payloads[0]["context"]["human_interact"]["question"],
+            serde_json::json!("Need approval?")
+        );
+        assert!(
+            payloads[0]["context"]["human_interact"]
+                .get("outcome")
+                .is_none(),
+            "pre.human.interact payload should not include outcome"
+        );
+
+        assert_eq!(
+            payloads[1]["phase_event"],
+            serde_json::json!("post.human.interact")
+        );
+        assert_eq!(
+            payloads[1]["context"]["human_interact"]["question"],
+            serde_json::json!("Need approval?")
+        );
+        assert_eq!(
+            payloads[1]["context"]["human_interact"]["outcome"],
+            serde_json::json!("no_robot_service")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_loop_termination_lifecycle_hooks_dispatch_complete_and_error_boundaries() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let log_path = temp_dir.path().join("loop-termination-hook-payloads.jsonl");
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(
+            HookPhaseEvent::PreLoopComplete,
+            vec![payload_recording_hook("pre-loop-complete", &log_path)],
+        );
+        events.insert(
+            HookPhaseEvent::PostLoopComplete,
+            vec![payload_recording_hook("post-loop-complete", &log_path)],
+        );
+        events.insert(
+            HookPhaseEvent::PreLoopError,
+            vec![payload_recording_hook("pre-loop-error", &log_path)],
+        );
+        events.insert(
+            HookPhaseEvent::PostLoopError,
+            vec![payload_recording_hook("post-loop-error", &log_path)],
+        );
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+        let suspend_state_store = SuspendStateStore::new(temp_dir.path());
+
+        let completed_reason = block_on_test_future(dispatch_pre_loop_termination_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            &suspend_state_store,
+            &loop_ctx,
+            5,
+            TerminationReason::CompletionPromise,
+        ))
+        .expect("pre.loop.complete dispatch should succeed");
+        let completed_reason = block_on_test_future(dispatch_post_loop_termination_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            &suspend_state_store,
+            &loop_ctx,
+            5,
+            completed_reason,
+        ))
+        .expect("post.loop.complete dispatch should succeed");
+        assert_eq!(completed_reason, TerminationReason::CompletionPromise);
+
+        let error_reason = block_on_test_future(dispatch_pre_loop_termination_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            &suspend_state_store,
+            &loop_ctx,
+            5,
+            TerminationReason::MaxRuntime,
+        ))
+        .expect("pre.loop.error dispatch should succeed");
+        let error_reason = block_on_test_future(dispatch_post_loop_termination_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            &suspend_state_store,
+            &loop_ctx,
+            5,
+            error_reason,
+        ))
+        .expect("post.loop.error dispatch should succeed");
+        assert_eq!(error_reason, TerminationReason::MaxRuntime);
+
+        let payloads = read_hook_payload_log(&log_path);
+        let phases: Vec<&str> = payloads
+            .iter()
+            .map(|payload| {
+                payload["phase_event"]
+                    .as_str()
+                    .expect("phase_event should be present")
+            })
+            .collect();
+        let reasons: Vec<&str> = payloads
+            .iter()
+            .map(|payload| {
+                payload["context"]["termination_reason"]
+                    .as_str()
+                    .expect("termination_reason should be present")
+            })
+            .collect();
+
+        assert_eq!(
+            phases,
+            vec![
+                "pre.loop.complete",
+                "post.loop.complete",
+                "pre.loop.error",
+                "post.loop.error"
+            ]
+        );
+        assert_eq!(
+            reasons,
+            vec!["completed", "completed", "max_runtime", "max_runtime"]
+        );
     }
 
     #[cfg(unix)]

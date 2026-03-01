@@ -2928,6 +2928,34 @@ hooks:
     }
 
     #[test]
+    fn test_hooks_parse_rejects_backpressure_phase_event_keys_in_v1() {
+        let yaml = r#"
+hooks:
+  enabled: true
+  events:
+    pre.backpressure.triggered:
+      - name: unsupported-backpressure
+        command: ["./scripts/hooks/backpressure.sh"]
+        on_error: warn
+"#;
+
+        let result = RalphConfig::parse_yaml(yaml);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(matches!(
+            &err,
+            ConfigError::InvalidHookPhaseEvent { phase_event }
+            if phase_event == "pre.backpressure.triggered"
+        ));
+
+        let message = err.to_string();
+        assert!(message.contains("Supported v1 phase-events"));
+        assert!(message.contains("pre.plan.created"));
+        assert!(message.contains("post.loop.error"));
+    }
+
+    #[test]
     fn test_hooks_parse_rejects_invalid_on_error_enum_value() {
         let yaml = r#"
 hooks:

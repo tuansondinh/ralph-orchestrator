@@ -876,31 +876,127 @@ fn evaluate_ac_09(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddSc
 
 fn evaluate_ac_10(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
     evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        // AC-10: Verify suspend default mode - on_error: suspend defaults to wait_for_resume
-        // Source: crates/ralph-core/src/config.rs:1285 - HookOnError::Suspend
-        // crates/ralph-core/src/config.rs - HookSuspendMode::WaitForResume default
-        // crates/ralph-core/src/hooks/suspend_state.rs - SuspendStateStore implementation
-        // When hook fails with suspend, state persisted with suspend_mode: wait_for_resume
+        assert_workspace_source_contains(
+            "crates/ralph-core/src/hooks/suspend_state.rs",
+            &[
+                (
+                    "suspend-state record persists per-hook suspend mode",
+                    "pub suspend_mode: HookSuspendMode,",
+                ),
+                (
+                    "suspend-state constructor marks lifecycle state as suspended",
+                    "state: SuspendLifecycleState::Suspended,",
+                ),
+                (
+                    "suspend-state schema test asserts wait_for_resume serialization",
+                    "assert_eq!(value[\"suspend_mode\"], \"wait_for_resume\");",
+                ),
+                (
+                    "suspend-state store models resume gate as single-use signal artifact",
+                    "/// Consume a single-use resume signal file.",
+                ),
+            ],
+        )?;
+
         Ok(())
     })
 }
 
 fn evaluate_ac_11(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
     evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        // AC-11: Verify CLI resume path - ralph loops resume <id> continues suspended loop
-        // Source: crates/ralph-cli/src/loops.rs - resume subcommand implementation
-        // Resumes loop by clearing suspend state and writing resume signal
-        // Signal file consumed atomically by suspended loop, resumes orchestration
+        assert_workspace_source_contains(
+            "crates/ralph-cli/src/loops.rs",
+            &[
+                ("loops CLI exposes resume subcommand", "Resume(ResumeArgs),"),
+                (
+                    "loops command handler routes resume requests",
+                    "Some(LoopsCommands::Resume(resume_args)) => resume_loop(resume_args),",
+                ),
+                (
+                    "resume command resolves suspend-state store at loop workspace root",
+                    "let suspend_state_store = SuspendStateStore::new(&target_root);",
+                ),
+                (
+                    "resume command reads persisted suspend-state before resuming",
+                    ".read_suspend_state()",
+                ),
+                (
+                    "resume command writes resume-requested signal artifact",
+                    ".write_resume_requested()",
+                ),
+                (
+                    "resume command reports continuation from suspended boundary",
+                    "The loop will continue from the suspended boundary.",
+                ),
+                (
+                    "in-place resume test verifies resume signal creation",
+                    "fn test_resume_loop_writes_resume_signal_for_in_place_loop() {",
+                ),
+                (
+                    "worktree resume test verifies resume targets resolved loop worktree",
+                    "fn test_resume_loop_resolves_partial_id_and_targets_worktree() {",
+                ),
+            ],
+        )?;
+
         Ok(())
     })
 }
 
 fn evaluate_ac_12(scenario: &HooksBddScenario, ci_safe_mode: bool) -> HooksBddScenarioResult {
     evaluate_green_acceptance(scenario, ci_safe_mode, validate_acceptance_context, || {
-        // AC-12: Verify resume idempotency - multiple resume calls are safe and non-destructive
-        // Source: crates/ralph-core/src/hooks/suspend_state.rs - atomic signal consumption
-        // Resume signal is single-use: consumed atomically, subsequent calls return no-op
-        // Non-suspended loops return informative message without side effects
+        assert_workspace_source_contains(
+            "crates/ralph-core/src/hooks/suspend_state.rs",
+            &[
+                (
+                    "suspend-state store exposes resume-requested probe",
+                    "pub fn is_resume_requested(&self) -> bool {",
+                ),
+                (
+                    "suspend-state store consumes resume signal via single-use operation",
+                    "pub fn consume_resume_requested(&self) -> Result<bool, SuspendStateStoreError> {",
+                ),
+                (
+                    "resume signal consumption removes resume-requested artifact",
+                    "remove_if_exists(&self.resume_requested_path(), \"consume resume signal\")",
+                ),
+                (
+                    "store unit test verifies resume signal single-use behavior",
+                    "fn test_resume_signal_is_single_use() {",
+                ),
+            ],
+        )?;
+
+        assert_workspace_source_contains(
+            "crates/ralph-cli/src/loops.rs",
+            &[
+                (
+                    "resume command checks for already-requested resume signal",
+                    "let resume_already_requested = suspend_state_store.is_resume_requested();",
+                ),
+                (
+                    "already-requested resume against unsuspended loop returns informative no-op",
+                    "The loop is not currently suspended; no action taken.",
+                ),
+                (
+                    "already-requested resume while suspended returns informative wait message",
+                    "Resume was already requested for loop '{}'. Waiting for the loop to continue.",
+                ),
+                (
+                    "non-suspended loop resume request returns informative no-op",
+                    "Loop '{}' is not currently suspended. Nothing to resume.",
+                ),
+                (
+                    "idempotency regression test covers repeat resume request",
+                    "fn test_resume_loop_is_idempotent_when_resume_already_requested() {",
+                ),
+                (
+                    "non-suspended regression test covers no-op resume path",
+                    "fn test_resume_loop_noops_for_non_suspended_loop() {",
+                ),
+            ],
+        )?;
+
         Ok(())
     })
 }

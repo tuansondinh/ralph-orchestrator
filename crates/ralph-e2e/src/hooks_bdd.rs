@@ -2226,6 +2226,146 @@ fn is_acceptance_id(tag: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn synthetic_scenario(scenario_id: &str, scenario_name: &str) -> HooksBddScenario {
+        HooksBddScenario {
+            scenario_id: scenario_id.to_string(),
+            scenario_name: scenario_name.to_string(),
+            feature_file: "hooks/synthetic.feature".to_string(),
+            tags: vec![scenario_id.to_string()],
+            steps: vec![],
+        }
+    }
+
+    #[test]
+    fn harness_prepare_temp_workspace_resets_existing_contents() {
+        let scenario = synthetic_scenario("AC-90", "Workspace reset determinism");
+        let harness = HooksBddIntegrationHarness::new(&scenario, true);
+
+        let workspace_dir = harness
+            .prepare_temp_workspace("runtime workspace")
+            .expect("workspace should be created");
+
+        assert!(workspace_dir.ends_with("workspace/runtime-workspace"));
+        assert!(workspace_dir.join(".ralph/agent").is_dir());
+
+        harness
+            .write_workspace_file(&workspace_dir, "fixtures/data.txt", "seed")
+            .expect("fixture file should be created");
+        assert!(workspace_dir.join("fixtures/data.txt").exists());
+
+        let reset_workspace = harness
+            .prepare_temp_workspace("runtime workspace")
+            .expect("workspace reset should succeed");
+
+        assert_eq!(reset_workspace, workspace_dir);
+        assert!(workspace_dir.join(".ralph/agent").is_dir());
+        assert!(
+            !workspace_dir.join("fixtures/data.txt").exists(),
+            "reset workspace should remove previous fixture files"
+        );
+    }
+
+    #[test]
+    fn harness_scaffold_run_artifact_is_deterministic() {
+        let scenario = synthetic_scenario("AC-91", "Artifact determinism");
+        let mut harness = HooksBddIntegrationHarness::new(&scenario, true);
+
+        let first_index = harness.scaffold_run_artifact("hooks.validate", "ralph hooks validate");
+        let second_index = harness.scaffold_run_artifact("ralph.run", "ralph run -p smoke");
+
+        assert_eq!(first_index, 0);
+        assert_eq!(second_index, 1);
+
+        let artifacts = harness.artifacts();
+        let expected_root = default_hooks_bdd_artifact_root().join("ac-91-artifact-determinism");
+
+        assert_eq!(artifacts.root_dir, expected_root);
+        assert_eq!(artifacts.run_artifacts.len(), 2);
+
+        let first = &artifacts.run_artifacts[0];
+        assert_eq!(
+            first.stdout_path,
+            expected_root.join("01-hooks-validate/stdout.log")
+        );
+        assert_eq!(
+            first.stderr_path,
+            expected_root.join("01-hooks-validate/stderr.log")
+        );
+
+        let second = &artifacts.run_artifacts[1];
+        assert_eq!(
+            second.stdout_path,
+            expected_root.join("02-ralph-run/stdout.log")
+        );
+        assert_eq!(
+            second.stderr_path,
+            expected_root.join("02-ralph-run/stderr.log")
+        );
+    }
+
+    #[test]
+    fn harness_run_bounded_ralph_command_captures_exit_metadata() {
+        let scenario = synthetic_scenario("AC-92", "Bounded command exit capture");
+        let mut harness = HooksBddIntegrationHarness::new(&scenario, true);
+        let workspace_dir = harness
+            .prepare_temp_workspace("command exit capture")
+            .expect("workspace should be created");
+
+        let artifact = harness
+            .run_bounded_ralph_command(
+                "ralph.version",
+                &workspace_dir,
+                &["--version"],
+                Duration::from_secs(2),
+            )
+            .expect("version command should complete successfully");
+
+        assert_eq!(artifact.name, "ralph.version");
+        assert_eq!(artifact.working_dir, workspace_dir);
+        assert!(!artifact.timed_out);
+        assert_eq!(artifact.exit_code, Some(0));
+        assert!(artifact.stdout_path.is_file());
+        assert!(artifact.stderr_path.is_file());
+
+        let stdout =
+            fs::read_to_string(&artifact.stdout_path).expect("stdout artifact should be readable");
+        assert!(stdout.contains("ralph"));
+    }
+
+    #[test]
+    fn harness_run_bounded_ralph_command_marks_timeout() {
+        let scenario = synthetic_scenario("AC-93", "Bounded command timeout capture");
+        let mut harness = HooksBddIntegrationHarness::new(&scenario, true);
+        let workspace_dir = harness
+            .prepare_temp_workspace("command timeout capture")
+            .expect("workspace should be created");
+
+        let artifact = harness
+            .run_bounded_ralph_command(
+                "ralph.run-timeout",
+                &workspace_dir,
+                &["run", "-p", "hooks-bdd-timeout", "--max-iterations", "1"],
+                Duration::from_millis(10),
+            )
+            .expect("bounded command should return timeout artifact");
+
+        assert!(
+            artifact.timed_out,
+            "expected timeout marker for bounded command"
+        );
+        assert_eq!(artifact.working_dir, workspace_dir);
+        assert!(artifact.stdout_path.is_file());
+        assert!(artifact.stderr_path.is_file());
+
+        let artifact_from_manifest = harness
+            .artifacts()
+            .run_artifacts
+            .iter()
+            .find(|run| run.name == "ralph.run-timeout")
+            .expect("timeout artifact should be persisted in harness manifest");
+        assert!(artifact_from_manifest.timed_out);
+    }
+
     #[test]
     fn discover_hooks_bdd_scenarios_finds_all_placeholder_scenarios() {
         let scenarios = discover_hooks_bdd_scenarios(None).expect("should discover scenarios");

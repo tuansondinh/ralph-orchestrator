@@ -41,6 +41,11 @@ clean:
 ci: fmt-check lint test
     @echo "✅ CI checks passed"
 
+# Baseline mutation command (tooling: cargo-mutants)
+mutants-baseline:
+    git diff > /tmp/ralph-mutants.diff
+    cargo mutants --in-diff /tmp/ralph-mutants.diff
+
 # Setup development environment (install hooks)
 setup:
     @echo "Development environment is managed by devenv.sh"

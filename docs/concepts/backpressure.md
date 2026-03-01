@@ -45,7 +45,7 @@ hats:
       - typecheck: pass (run `cargo check`)
       - audit: pass (run `cargo audit`)
       - coverage: pass (run `cargo tarpaulin` or equivalent)
-      - mutants: pass (run `git diff > /tmp/changes.diff && cargo mutants --in-diff /tmp/changes.diff`) # warning-only
+      - mutants: pass (run `just mutants-baseline`) # warning-only
 
       Include evidence in your event:
       ```
@@ -97,8 +97,27 @@ hats:
 | Audit | `cargo audit`, `npm audit` | Known vulnerabilities |
 | Format | `cargo fmt --check` | Style violations |
 | Build | `cargo build` | Compilation errors |
-| Mutation | `cargo mutants --in-diff <diff>` | Untested logic gaps (warning-only) |
+| Mutation | `just mutants-baseline` | Untested logic gaps (warning-only) |
 | Specs | Verify acceptance criteria | Spec criteria not met by tests (optional, fail blocks) |
+
+### Repository Mutation Baseline
+
+For this repository, the mutation tooling baseline is **cargo-mutants**, invoked via:
+
+```bash
+just mutants-baseline
+```
+
+This command expands to:
+
+```bash
+git diff > /tmp/ralph-mutants.diff
+cargo mutants --in-diff /tmp/ralph-mutants.diff
+```
+
+Mutation score calibration starts at **>=70%**, aligned with
+`QualityReport::MUTATION_THRESHOLD` in
+`crates/ralph-core/src/event_parser.rs`.
 
 ### Behavioral Gates
 

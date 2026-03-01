@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::errors::ApiError;
+use crate::loop_support::now_ts;
 
 pub const API_VERSION: &str = "v1";
 pub const STREAM_NAME: &str = "events.v1";
@@ -228,8 +229,6 @@ fn response_meta(served_by: &str) -> ResponseMeta {
         served_at: now_ts(),
     }
 }
-
-use crate::loop_support::now_ts;
 
 fn request_schema_validator() -> &'static JSONSchema {
     static REQUEST_VALIDATOR: OnceLock<JSONSchema> = OnceLock::new();

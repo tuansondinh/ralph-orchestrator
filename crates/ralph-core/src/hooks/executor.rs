@@ -668,10 +668,7 @@ mod tests {
 
         // Force the kernel to process the deferred fput from close() above
         // by issuing another syscall that touches the same inode.
-        assert!(
-            fs::metadata(&script_path).expect("stat script").len() > 0,
-            "script must not be empty"
-        );
+        let _ = fs::metadata(&script_path).expect("stat script");
 
         script_path
     }

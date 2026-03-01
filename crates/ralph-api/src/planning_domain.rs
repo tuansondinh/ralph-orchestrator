@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::errors::ApiError;
+use crate::loop_support::now_ts;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -588,5 +589,3 @@ fn generate_title(prompt: &str) -> String {
     shortened.push_str("...");
     shortened
 }
-
-use crate::loop_support::now_ts;

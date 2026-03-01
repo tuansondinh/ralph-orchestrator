@@ -1212,14 +1212,14 @@ fn resolve_loop(cwd: &std::path::Path, id: &str) -> Result<(String, Option<Strin
 
     // Try exact match in registry
     if let Ok(Some(entry)) = registry.get(id) {
-        return Ok((entry.id.clone(), entry.worktree_path));
+        return Ok((entry.id, entry.worktree_path));
     }
 
     // Try partial match (e.g., "a3f2" matches "ralph-20250124-143052-a3f2")
     if let Ok(entries) = registry.list() {
         for entry in entries {
             if entry.id.ends_with(id) || entry.id.contains(id) {
-                return Ok((entry.id.clone(), entry.worktree_path));
+                return Ok((entry.id, entry.worktree_path));
             }
         }
     }

@@ -10,6 +10,7 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::errors::ApiError;
+use crate::loop_support::now_ts;
 
 use self::yaml::{export_collection_yaml, graph_from_yaml};
 
@@ -345,5 +346,3 @@ fn collection_not_found_error(collection_id: &str) -> ApiError {
     ApiError::collection_not_found(format!("Collection with id '{collection_id}' not found"))
         .with_details(serde_json::json!({ "collectionId": collection_id }))
 }
-
-use crate::loop_support::now_ts;

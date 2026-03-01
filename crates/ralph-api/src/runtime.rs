@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use axum::http::{HeaderMap, StatusCode};
-use chrono::{SecondsFormat, Utc};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -95,7 +94,7 @@ impl RpcRuntime {
     pub fn health_payload(&self) -> Value {
         json!({
             "status": "ok",
-            "timestamp": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+            "timestamp": crate::loop_support::now_ts()
         })
     }
 

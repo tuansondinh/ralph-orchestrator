@@ -5,6 +5,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::ApiError;
+use crate::loop_support::now_ts;
 
 mod storage;
 
@@ -526,5 +527,3 @@ fn task_not_found_error(task_id: &str) -> ApiError {
 fn is_terminal_status(status: &str) -> bool {
     matches!(status, "closed" | "failed")
 }
-
-use crate::loop_support::now_ts;

@@ -180,6 +180,7 @@ pub async fn run_loop_impl(
     let hook_engine = HookEngine::new(&config.hooks);
     let hook_executor = HookExecutor::new();
     let suspend_state_store = SuspendStateStore::new(ctx.workspace());
+    let mut accumulated_hook_metadata = serde_json::Map::new();
 
     let pre_loop_start_outcomes = dispatch_phase_event_hooks(
         &event_loop,
@@ -194,7 +195,12 @@ pub async fn run_loop_impl(
             config.event_loop.max_iterations,
             event_loop.state().iteration,
             None,
+            &accumulated_hook_metadata,
         ),
+    );
+    merge_accumulated_hook_metadata_from_outcomes(
+        &mut accumulated_hook_metadata,
+        &pre_loop_start_outcomes,
     );
     fail_if_blocking_loop_start_outcomes(&pre_loop_start_outcomes)?;
     let mut pending_suspend_termination_reason =
@@ -223,7 +229,12 @@ pub async fn run_loop_impl(
                 config.event_loop.max_iterations,
                 event_loop.state().iteration,
                 Some(event_loop.get_active_hat_id().as_str().to_string()),
+                &accumulated_hook_metadata,
             ),
+        );
+        merge_accumulated_hook_metadata_from_outcomes(
+            &mut accumulated_hook_metadata,
+            &post_loop_start_outcomes,
         );
         fail_if_blocking_loop_start_outcomes(&post_loop_start_outcomes)?;
         pending_suspend_termination_reason =
@@ -832,6 +843,7 @@ pub async fn run_loop_impl(
             &suspend_state_store,
             &ctx,
             config.event_loop.max_iterations,
+            &mut accumulated_hook_metadata,
             reason,
         )
         .await?;
@@ -852,6 +864,7 @@ pub async fn run_loop_impl(
             &suspend_state_store,
             &ctx,
             config.event_loop.max_iterations,
+            &mut accumulated_hook_metadata,
             reason,
         )
         .await?;
@@ -901,6 +914,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 TerminationReason::Interrupted,
             )
             .await?;
@@ -921,6 +935,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -1021,6 +1036,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -1042,6 +1058,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -1080,7 +1097,12 @@ pub async fn run_loop_impl(
                     Some(event_loop.get_active_hat_id().as_str().to_string()),
                     None,
                     None,
+                    &accumulated_hook_metadata,
                 ),
+            );
+            merge_accumulated_hook_metadata_from_outcomes(
+                &mut accumulated_hook_metadata,
+                &pre_iteration_start_outcomes,
             );
             fail_if_blocking_iteration_start_outcomes(&pre_iteration_start_outcomes)?;
 
@@ -1100,6 +1122,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -1120,6 +1143,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -1168,6 +1192,7 @@ pub async fn run_loop_impl(
                         &suspend_state_store,
                         &ctx,
                         config.event_loop.max_iterations,
+                        &mut accumulated_hook_metadata,
                         TerminationReason::Stopped,
                     )
                     .await?;
@@ -1188,6 +1213,7 @@ pub async fn run_loop_impl(
                         &suspend_state_store,
                         &ctx,
                         config.event_loop.max_iterations,
+                        &mut accumulated_hook_metadata,
                         reason,
                     )
                     .await?;
@@ -1228,6 +1254,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     TerminationReason::Stopped,
                 )
                 .await?;
@@ -1249,6 +1276,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -1307,7 +1335,12 @@ pub async fn run_loop_impl(
                 Some(display_hat.as_str().to_string()),
                 Some(display_hat.as_str().to_string()),
                 None,
+                &accumulated_hook_metadata,
             ),
+        );
+        merge_accumulated_hook_metadata_from_outcomes(
+            &mut accumulated_hook_metadata,
+            &post_iteration_start_outcomes,
         );
         fail_if_blocking_iteration_start_outcomes(&post_iteration_start_outcomes)?;
 
@@ -1327,6 +1360,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -1347,6 +1381,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -1631,6 +1666,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     TerminationReason::Interrupted,
                 )
                 .await?;
@@ -1647,6 +1683,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -1668,6 +1705,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -1688,6 +1726,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -1769,6 +1808,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -1790,6 +1830,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -1841,7 +1882,12 @@ pub async fn run_loop_impl(
                     Some(display_hat.as_str().to_string()),
                     Some(display_hat.as_str().to_string()),
                     None,
+                    &accumulated_hook_metadata,
                 ),
+            );
+            merge_accumulated_hook_metadata_from_outcomes(
+                &mut accumulated_hook_metadata,
+                &pre_plan_created_outcomes,
             );
             fail_if_blocking_plan_created_outcomes(&pre_plan_created_outcomes)?;
 
@@ -1861,6 +1907,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -1881,6 +1928,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -1929,7 +1977,12 @@ pub async fn run_loop_impl(
                     Some(display_hat.as_str().to_string()),
                     None,
                     Some(human_interact_context),
+                    &accumulated_hook_metadata,
                 ),
+            );
+            merge_accumulated_hook_metadata_from_outcomes(
+                &mut accumulated_hook_metadata,
+                &pre_human_interact_outcomes,
             );
             fail_if_blocking_human_interact_outcomes(&pre_human_interact_outcomes)?;
 
@@ -1949,6 +2002,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -1969,6 +2023,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -2015,7 +2070,12 @@ pub async fn run_loop_impl(
                     Some(display_hat.as_str().to_string()),
                     None,
                     Some(human_interact_context),
+                    &accumulated_hook_metadata,
                 ),
+            );
+            merge_accumulated_hook_metadata_from_outcomes(
+                &mut accumulated_hook_metadata,
+                &post_human_interact_outcomes,
             );
             fail_if_blocking_human_interact_outcomes(&post_human_interact_outcomes)?;
 
@@ -2035,6 +2095,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -2055,6 +2116,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -2095,7 +2157,12 @@ pub async fn run_loop_impl(
                     Some(display_hat.as_str().to_string()),
                     Some(display_hat.as_str().to_string()),
                     None,
+                    &accumulated_hook_metadata,
                 ),
+            );
+            merge_accumulated_hook_metadata_from_outcomes(
+                &mut accumulated_hook_metadata,
+                &post_plan_created_outcomes,
             );
             fail_if_blocking_plan_created_outcomes(&post_plan_created_outcomes)?;
 
@@ -2115,6 +2182,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -2135,6 +2203,7 @@ pub async fn run_loop_impl(
                     &suspend_state_store,
                     &ctx,
                     config.event_loop.max_iterations,
+                    &mut accumulated_hook_metadata,
                     reason,
                 )
                 .await?;
@@ -2186,6 +2255,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -2206,6 +2276,7 @@ pub async fn run_loop_impl(
                 &suspend_state_store,
                 &ctx,
                 config.event_loop.max_iterations,
+                &mut accumulated_hook_metadata,
                 reason,
             )
             .await?;
@@ -2257,6 +2328,7 @@ fn build_loop_start_payload_input(
     max_iterations: u32,
     iteration_current: u32,
     active_hat: Option<String>,
+    accumulated_metadata: &serde_json::Map<String, serde_json::Value>,
 ) -> HookPayloadBuilderInput {
     HookPayloadBuilderInput {
         loop_id: loop_id.to_string(),
@@ -2268,6 +2340,7 @@ fn build_loop_start_payload_input(
         iteration_max: max_iterations,
         context: HookPayloadContextInput {
             active_hat,
+            metadata: accumulated_metadata.clone(),
             ..HookPayloadContextInput::default()
         },
     }
@@ -2281,6 +2354,7 @@ fn build_iteration_start_payload_input(
     active_hat: Option<String>,
     selected_hat: Option<String>,
     selected_task: Option<String>,
+    accumulated_metadata: &serde_json::Map<String, serde_json::Value>,
 ) -> HookPayloadBuilderInput {
     HookPayloadBuilderInput {
         loop_id: loop_id.to_string(),
@@ -2294,6 +2368,7 @@ fn build_iteration_start_payload_input(
             active_hat,
             selected_hat,
             selected_task,
+            metadata: accumulated_metadata.clone(),
             ..HookPayloadContextInput::default()
         },
     }
@@ -2307,6 +2382,7 @@ fn build_plan_created_payload_input(
     active_hat: Option<String>,
     selected_hat: Option<String>,
     selected_task: Option<String>,
+    accumulated_metadata: &serde_json::Map<String, serde_json::Value>,
 ) -> HookPayloadBuilderInput {
     HookPayloadBuilderInput {
         loop_id: loop_id.to_string(),
@@ -2320,6 +2396,7 @@ fn build_plan_created_payload_input(
             active_hat,
             selected_hat,
             selected_task,
+            metadata: accumulated_metadata.clone(),
             ..HookPayloadContextInput::default()
         },
     }
@@ -2334,6 +2411,7 @@ fn build_human_interact_payload_input(
     selected_hat: Option<String>,
     selected_task: Option<String>,
     human_interact: Option<serde_json::Value>,
+    accumulated_metadata: &serde_json::Map<String, serde_json::Value>,
 ) -> HookPayloadBuilderInput {
     HookPayloadBuilderInput {
         loop_id: loop_id.to_string(),
@@ -2348,6 +2426,7 @@ fn build_human_interact_payload_input(
             selected_hat,
             selected_task,
             human_interact,
+            metadata: accumulated_metadata.clone(),
             ..HookPayloadContextInput::default()
         },
     }
@@ -2362,6 +2441,7 @@ fn build_loop_termination_payload_input(
     selected_hat: Option<String>,
     selected_task: Option<String>,
     termination_reason: &TerminationReason,
+    accumulated_metadata: &serde_json::Map<String, serde_json::Value>,
 ) -> HookPayloadBuilderInput {
     HookPayloadBuilderInput {
         loop_id: loop_id.to_string(),
@@ -2376,6 +2456,7 @@ fn build_loop_termination_payload_input(
             selected_hat,
             selected_task,
             termination_reason: Some(termination_reason.as_str().to_string()),
+            metadata: accumulated_metadata.clone(),
             ..HookPayloadContextInput::default()
         },
     }
@@ -2402,6 +2483,7 @@ fn dispatch_pre_loop_termination_hooks(
     suspend_state_store: &SuspendStateStore,
     ctx: &LoopContext,
     max_iterations: u32,
+    accumulated_hook_metadata: &mut serde_json::Map<String, serde_json::Value>,
     reason: TerminationReason,
 ) -> impl std::future::Future<Output = Result<TerminationReason>> + Send {
     let outcomes = collect_loop_termination_hook_outcomes(
@@ -2412,6 +2494,7 @@ fn dispatch_pre_loop_termination_hooks(
         hook_executor,
         ctx,
         max_iterations,
+        accumulated_hook_metadata,
         &reason,
         true,
     );
@@ -2434,6 +2517,7 @@ fn dispatch_post_loop_termination_hooks(
     suspend_state_store: &SuspendStateStore,
     ctx: &LoopContext,
     max_iterations: u32,
+    accumulated_hook_metadata: &mut serde_json::Map<String, serde_json::Value>,
     reason: TerminationReason,
 ) -> impl std::future::Future<Output = Result<TerminationReason>> + Send {
     let outcomes = collect_loop_termination_hook_outcomes(
@@ -2444,6 +2528,7 @@ fn dispatch_post_loop_termination_hooks(
         hook_executor,
         ctx,
         max_iterations,
+        accumulated_hook_metadata,
         &reason,
         false,
     );
@@ -2465,6 +2550,7 @@ fn collect_loop_termination_hook_outcomes(
     hook_executor: &HookExecutor,
     ctx: &LoopContext,
     max_iterations: u32,
+    accumulated_hook_metadata: &mut serde_json::Map<String, serde_json::Value>,
     reason: &TerminationReason,
     is_pre_phase: bool,
 ) -> Vec<HookDispatchOutcome> {
@@ -2476,7 +2562,7 @@ fn collect_loop_termination_hook_outcomes(
     };
 
     let active_hat = event_loop.get_active_hat_id().as_str().to_string();
-    dispatch_phase_event_hooks(
+    let outcomes = dispatch_phase_event_hooks(
         event_loop,
         hooks_dispatch_enabled,
         loop_id,
@@ -2492,8 +2578,11 @@ fn collect_loop_termination_hook_outcomes(
             Some(active_hat),
             None,
             reason,
+            accumulated_hook_metadata,
         ),
-    )
+    );
+    merge_accumulated_hook_metadata_from_outcomes(accumulated_hook_metadata, &outcomes);
+    outcomes
 }
 
 async fn resolve_loop_termination_hook_outcomes(
@@ -2616,6 +2705,61 @@ fn merge_hook_metadata_namespace(
     Ok(())
 }
 
+fn merge_namespaced_hook_metadata(
+    accumulated_metadata: &mut serde_json::Map<String, serde_json::Value>,
+    namespaced_metadata: &serde_json::Map<String, serde_json::Value>,
+) -> std::result::Result<(), HookMutationParseError> {
+    let Some(namespace_object) = namespaced_metadata
+        .get(HOOK_MUTATION_METADATA_NAMESPACE_KEY)
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Err(HookMutationParseError::InvalidSchema {
+            message: format!(
+                "parsed mutation metadata must contain object key '{HOOK_MUTATION_METADATA_NAMESPACE_KEY}'"
+            ),
+        });
+    };
+
+    for (hook_name, metadata_value) in namespace_object {
+        let Some(metadata_object) = metadata_value.as_object().cloned() else {
+            return Err(HookMutationParseError::InvalidSchema {
+                message: format!(
+                    "parsed metadata entry for hook '{hook_name}' must be a JSON object"
+                ),
+            });
+        };
+
+        merge_hook_metadata_namespace(accumulated_metadata, hook_name, metadata_object)?;
+    }
+
+    Ok(())
+}
+
+fn merge_accumulated_hook_metadata_from_outcomes(
+    accumulated_hook_metadata: &mut serde_json::Map<String, serde_json::Value>,
+    outcomes: &[HookDispatchOutcome],
+) {
+    for outcome in outcomes {
+        let HookMutationParseOutcome::Parsed {
+            namespaced_metadata,
+        } = &outcome.mutation_parse_outcome
+        else {
+            continue;
+        };
+
+        if let Err(error) =
+            merge_namespaced_hook_metadata(accumulated_hook_metadata, namespaced_metadata)
+        {
+            warn!(
+                phase_event = %outcome.phase_event,
+                hook_name = %outcome.hook_name,
+                error = ?error,
+                "Failed to merge parsed hook mutation metadata; ignoring mutation output"
+            );
+        }
+    }
+}
+
 fn max_retry_attempts_for_suspend_mode(suspend_mode: HookSuspendMode) -> u32 {
     match suspend_mode {
         HookSuspendMode::WaitForResume => 1,
@@ -2631,13 +2775,14 @@ enum SuspendWaitOutcome {
     Restart,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct HookDispatchOutcome {
     phase_event: HookPhaseEvent,
     hook_name: String,
     disposition: HookDisposition,
     suspend_mode: HookSuspendMode,
     failure: Option<HookDispatchFailure>,
+    mutation_parse_outcome: HookMutationParseOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3058,7 +3203,8 @@ fn execute_hook_attempt(
     match hook_executor.run(request.clone()) {
         Ok(run_result) => {
             let disposition = classify_hook_disposition(on_error, &run_result);
-            let _ = parse_hook_mutation_stdout(mutate, hook_name, &run_result.stdout.content);
+            let mutation_parse_outcome =
+                parse_hook_mutation_stdout(mutate, hook_name, &run_result.stdout.content);
 
             event_loop.log_hook_run_telemetry(HookRunTelemetryEntry::from_run_result(
                 loop_id,
@@ -3100,6 +3246,7 @@ fn execute_hook_attempt(
                 disposition,
                 suspend_mode,
                 failure,
+                mutation_parse_outcome,
             }
         }
         Err(error) => {
@@ -3121,6 +3268,7 @@ fn execute_hook_attempt(
                 failure: Some(HookDispatchFailure::HookExecutionError {
                     message: error.to_string(),
                 }),
+                mutation_parse_outcome: HookMutationParseOutcome::Disabled,
             }
         }
     }
@@ -4450,6 +4598,8 @@ printf '%s\n' "$payload" >> "$1""#
                 exit_code: Some(41),
                 timed_out: false,
             }),
+
+            mutation_parse_outcome: HookMutationParseOutcome::Disabled,
         }
     }
 
@@ -4466,6 +4616,169 @@ printf '%s\n' "$payload" >> "$1""#
             .build()
             .expect("build tokio runtime")
             .block_on(future)
+    }
+
+    fn empty_hook_metadata() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::Map::new()
+    }
+
+    fn build_loop_start_payload_input(
+        loop_id: &str,
+        ctx: &LoopContext,
+        max_iterations: u32,
+        iteration_current: u32,
+        active_hat: Option<String>,
+    ) -> HookPayloadBuilderInput {
+        super::build_loop_start_payload_input(
+            loop_id,
+            ctx,
+            max_iterations,
+            iteration_current,
+            active_hat,
+            &empty_hook_metadata(),
+        )
+    }
+
+    fn build_iteration_start_payload_input(
+        loop_id: &str,
+        ctx: &LoopContext,
+        max_iterations: u32,
+        iteration_current: u32,
+        active_hat: Option<String>,
+        selected_hat: Option<String>,
+        selected_task: Option<String>,
+    ) -> HookPayloadBuilderInput {
+        super::build_iteration_start_payload_input(
+            loop_id,
+            ctx,
+            max_iterations,
+            iteration_current,
+            active_hat,
+            selected_hat,
+            selected_task,
+            &empty_hook_metadata(),
+        )
+    }
+
+    fn build_plan_created_payload_input(
+        loop_id: &str,
+        ctx: &LoopContext,
+        max_iterations: u32,
+        iteration_current: u32,
+        active_hat: Option<String>,
+        selected_hat: Option<String>,
+        selected_task: Option<String>,
+    ) -> HookPayloadBuilderInput {
+        super::build_plan_created_payload_input(
+            loop_id,
+            ctx,
+            max_iterations,
+            iteration_current,
+            active_hat,
+            selected_hat,
+            selected_task,
+            &empty_hook_metadata(),
+        )
+    }
+
+    fn build_human_interact_payload_input(
+        loop_id: &str,
+        ctx: &LoopContext,
+        max_iterations: u32,
+        iteration_current: u32,
+        active_hat: Option<String>,
+        selected_hat: Option<String>,
+        selected_task: Option<String>,
+        human_interact: Option<serde_json::Value>,
+    ) -> HookPayloadBuilderInput {
+        super::build_human_interact_payload_input(
+            loop_id,
+            ctx,
+            max_iterations,
+            iteration_current,
+            active_hat,
+            selected_hat,
+            selected_task,
+            human_interact,
+            &empty_hook_metadata(),
+        )
+    }
+
+    fn build_loop_termination_payload_input(
+        loop_id: &str,
+        ctx: &LoopContext,
+        max_iterations: u32,
+        iteration_current: u32,
+        active_hat: Option<String>,
+        selected_hat: Option<String>,
+        selected_task: Option<String>,
+        termination_reason: &TerminationReason,
+    ) -> HookPayloadBuilderInput {
+        super::build_loop_termination_payload_input(
+            loop_id,
+            ctx,
+            max_iterations,
+            iteration_current,
+            active_hat,
+            selected_hat,
+            selected_task,
+            termination_reason,
+            &empty_hook_metadata(),
+        )
+    }
+
+    async fn dispatch_pre_loop_termination_hooks(
+        event_loop: &EventLoop,
+        hooks_dispatch_enabled: bool,
+        loop_id: &str,
+        hook_engine: &HookEngine,
+        hook_executor: &HookExecutor,
+        suspend_state_store: &SuspendStateStore,
+        ctx: &LoopContext,
+        max_iterations: u32,
+        reason: TerminationReason,
+    ) -> Result<TerminationReason> {
+        let mut accumulated_hook_metadata = serde_json::Map::new();
+        super::dispatch_pre_loop_termination_hooks(
+            event_loop,
+            hooks_dispatch_enabled,
+            loop_id,
+            hook_engine,
+            hook_executor,
+            suspend_state_store,
+            ctx,
+            max_iterations,
+            &mut accumulated_hook_metadata,
+            reason,
+        )
+        .await
+    }
+
+    async fn dispatch_post_loop_termination_hooks(
+        event_loop: &EventLoop,
+        hooks_dispatch_enabled: bool,
+        loop_id: &str,
+        hook_engine: &HookEngine,
+        hook_executor: &HookExecutor,
+        suspend_state_store: &SuspendStateStore,
+        ctx: &LoopContext,
+        max_iterations: u32,
+        reason: TerminationReason,
+    ) -> Result<TerminationReason> {
+        let mut accumulated_hook_metadata = serde_json::Map::new();
+        super::dispatch_post_loop_termination_hooks(
+            event_loop,
+            hooks_dispatch_enabled,
+            loop_id,
+            hook_engine,
+            hook_executor,
+            suspend_state_store,
+            ctx,
+            max_iterations,
+            &mut accumulated_hook_metadata,
+            reason,
+        )
+        .await
     }
 
     #[cfg(unix)]
@@ -4535,6 +4848,97 @@ printf '%s\n' "$payload" >> "$1""#
                 "pre-iteration-second|pre.iteration.start".to_string(),
                 "post-loop-only|post.loop.start".to_string(),
             ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_hook_mutation_metadata_accumulates_into_following_lifecycle_payloads() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let payload_log_path = temp_dir.path().join("hook-metadata-payloads.jsonl");
+
+        let mut mutation_spec = hook_spec_with_command(
+            "metadata-emitter",
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf '%s' '{\"metadata\":{\"risk_score\":0.72}}'".to_string(),
+            ],
+        );
+        mutation_spec.mutate = hook_mutation_config(true);
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(HookPhaseEvent::PreLoopStart, vec![mutation_spec]);
+        events.insert(
+            HookPhaseEvent::PostLoopStart,
+            vec![payload_recording_hook(
+                "payload-recorder",
+                &payload_log_path,
+            )],
+        );
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+        let mut accumulated_hook_metadata = serde_json::Map::new();
+
+        let pre_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreLoopStart,
+            super::build_loop_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                0,
+                Some("planner".to_string()),
+                &accumulated_hook_metadata,
+            ),
+        );
+        assert!(matches!(
+            pre_outcomes[0].mutation_parse_outcome,
+            HookMutationParseOutcome::Parsed { .. }
+        ));
+
+        merge_accumulated_hook_metadata_from_outcomes(
+            &mut accumulated_hook_metadata,
+            &pre_outcomes,
+        );
+        assert_eq!(
+            accumulated_hook_metadata["hook_metadata"]["metadata-emitter"]["risk_score"],
+            serde_json::json!(0.72)
+        );
+
+        let post_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PostLoopStart,
+            super::build_loop_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                0,
+                Some("planner".to_string()),
+                &accumulated_hook_metadata,
+            ),
+        );
+        merge_accumulated_hook_metadata_from_outcomes(
+            &mut accumulated_hook_metadata,
+            &post_outcomes,
+        );
+
+        let payloads = read_hook_payload_log(&payload_log_path);
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            payloads[0]["metadata"]["accumulated"]["hook_metadata"]["metadata-emitter"]["risk_score"],
+            serde_json::json!(0.72)
         );
     }
 
@@ -5995,6 +6399,8 @@ exit 73"#
                         disposition: HookDisposition::Pass,
                         suspend_mode: HookSuspendMode::RetryBackoff,
                         failure: None,
+
+                        mutation_parse_outcome: HookMutationParseOutcome::Disabled,
                     }
                 } else {
                     suspend_outcome_with_mode(
@@ -6098,6 +6504,8 @@ exit 73"#
                     disposition: HookDisposition::Pass,
                     suspend_mode: HookSuspendMode::WaitThenRetry,
                     failure: None,
+
+                    mutation_parse_outcome: HookMutationParseOutcome::Disabled,
                 }
             },
             suspend_outcome_with_mode(
@@ -6179,6 +6587,8 @@ exit 73"#
                     disposition: HookDisposition::Pass,
                     suspend_mode: HookSuspendMode::WaitThenRetry,
                     failure: None,
+
+                    mutation_parse_outcome: HookMutationParseOutcome::Disabled,
                 }
             },
             initial_outcome.clone(),
@@ -6201,6 +6611,8 @@ exit 73"#
                     exit_code: Some(7),
                     timed_out: false,
                 }),
+
+                mutation_parse_outcome: HookMutationParseOutcome::Disabled,
             },
             HookDispatchOutcome {
                 phase_event: HookPhaseEvent::PostLoopStart,
@@ -6208,6 +6620,8 @@ exit 73"#
                 disposition: HookDisposition::Pass,
                 suspend_mode: HookSuspendMode::WaitForResume,
                 failure: None,
+
+                mutation_parse_outcome: HookMutationParseOutcome::Disabled,
             },
         ];
 
@@ -6225,6 +6639,8 @@ exit 73"#
                 exit_code: Some(42),
                 timed_out: false,
             }),
+
+            mutation_parse_outcome: HookMutationParseOutcome::Disabled,
         }];
 
         let blocked_exit_error = fail_if_blocking_loop_start_outcomes(&blocked_exit_outcomes)
@@ -6242,6 +6658,8 @@ exit 73"#
             failure: Some(HookDispatchFailure::HookExecutionError {
                 message: "spawn failed".to_string(),
             }),
+
+            mutation_parse_outcome: HookMutationParseOutcome::Disabled,
         }];
 
         let blocked_exec_error = fail_if_blocking_loop_start_outcomes(&blocked_exec_outcomes)
@@ -6264,6 +6682,8 @@ exit 73"#
                     exit_code: Some(9),
                     timed_out: false,
                 }),
+
+                mutation_parse_outcome: HookMutationParseOutcome::Disabled,
             },
             HookDispatchOutcome {
                 phase_event: HookPhaseEvent::PostIterationStart,
@@ -6271,6 +6691,8 @@ exit 73"#
                 disposition: HookDisposition::Pass,
                 suspend_mode: HookSuspendMode::WaitForResume,
                 failure: None,
+
+                mutation_parse_outcome: HookMutationParseOutcome::Disabled,
             },
         ];
 
@@ -6288,6 +6710,8 @@ exit 73"#
                 exit_code: None,
                 timed_out: true,
             }),
+
+            mutation_parse_outcome: HookMutationParseOutcome::Disabled,
         }];
 
         let blocked_timeout_error =
@@ -6306,6 +6730,8 @@ exit 73"#
             failure: Some(HookDispatchFailure::HookExecutionError {
                 message: "spawn failed".to_string(),
             }),
+
+            mutation_parse_outcome: HookMutationParseOutcome::Disabled,
         }];
 
         let blocked_exec_error = fail_if_blocking_iteration_start_outcomes(&blocked_exec_outcomes)
@@ -6328,6 +6754,8 @@ exit 73"#
                     exit_code: Some(9),
                     timed_out: false,
                 }),
+
+                mutation_parse_outcome: HookMutationParseOutcome::Disabled,
             },
             HookDispatchOutcome {
                 phase_event: HookPhaseEvent::PostHumanInteract,
@@ -6335,6 +6763,8 @@ exit 73"#
                 disposition: HookDisposition::Pass,
                 suspend_mode: HookSuspendMode::WaitForResume,
                 failure: None,
+
+                mutation_parse_outcome: HookMutationParseOutcome::Disabled,
             },
         ];
 
@@ -6352,6 +6782,8 @@ exit 73"#
                 exit_code: None,
                 timed_out: true,
             }),
+
+            mutation_parse_outcome: HookMutationParseOutcome::Disabled,
         }];
 
         let blocked_timeout_error =
@@ -6370,6 +6802,8 @@ exit 73"#
             failure: Some(HookDispatchFailure::HookExecutionError {
                 message: "spawn failed".to_string(),
             }),
+
+            mutation_parse_outcome: HookMutationParseOutcome::Disabled,
         }];
 
         let blocked_exec_error = fail_if_blocking_human_interact_outcomes(&blocked_exec_outcomes)
@@ -6570,6 +7004,8 @@ exit 73"#
                     exit_code: Some(9),
                     timed_out: false,
                 }),
+
+                mutation_parse_outcome: HookMutationParseOutcome::Disabled,
             },
             HookDispatchOutcome {
                 phase_event: HookPhaseEvent::PostLoopError,
@@ -6577,6 +7013,8 @@ exit 73"#
                 disposition: HookDisposition::Pass,
                 suspend_mode: HookSuspendMode::WaitForResume,
                 failure: None,
+
+                mutation_parse_outcome: HookMutationParseOutcome::Disabled,
             },
         ];
 
@@ -6594,6 +7032,8 @@ exit 73"#
                 exit_code: None,
                 timed_out: true,
             }),
+
+            mutation_parse_outcome: HookMutationParseOutcome::Disabled,
         }];
 
         let blocked_timeout_error =
@@ -6612,6 +7052,8 @@ exit 73"#
             failure: Some(HookDispatchFailure::HookExecutionError {
                 message: "spawn failed".to_string(),
             }),
+
+            mutation_parse_outcome: HookMutationParseOutcome::Disabled,
         }];
 
         let blocked_exec_error = fail_if_blocking_loop_termination_outcomes(&blocked_exec_outcomes)
@@ -6636,6 +7078,8 @@ exit 73"#
                 exit_code: Some(7),
                 timed_out: false,
             }),
+
+            mutation_parse_outcome: HookMutationParseOutcome::Disabled,
         }];
 
         let wait_result = block_on_test_future(wait_for_resume_if_suspended(

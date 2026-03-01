@@ -628,10 +628,19 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     fn write_executable_script(temp_dir: &TempDir, file_name: &str, body: &str) -> PathBuf {
+        use std::io::Write;
+
         let script_path = temp_dir.path().join(file_name);
         let script = format!("#!/bin/sh\nset -eu\n{body}\n");
 
-        fs::write(&script_path, script).expect("write script file");
+        // Explicit open/write/sync/close to avoid ETXTBSY on CI:
+        // the kernel may reject exec() if the write fd isn't fully closed.
+        {
+            let mut file = fs::File::create(&script_path).expect("create script file");
+            file.write_all(script.as_bytes())
+                .expect("write script file");
+            file.sync_all().expect("sync script file");
+        }
 
         let mut permissions = fs::metadata(&script_path)
             .expect("read script metadata")

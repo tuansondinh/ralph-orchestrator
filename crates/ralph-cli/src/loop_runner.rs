@@ -2623,6 +2623,13 @@ enum HookMutationParseError {
     InvalidSchema { message: String },
 }
 
+fn format_hook_mutation_parse_error(error: &HookMutationParseError) -> String {
+    match error {
+        HookMutationParseError::InvalidJson { message }
+        | HookMutationParseError::InvalidSchema { message } => message.clone(),
+    }
+}
+
 fn parse_hook_mutation_stdout(
     mutate: &HookMutationConfig,
     hook_name: &str,
@@ -2760,6 +2767,18 @@ fn merge_accumulated_hook_metadata_from_outcomes(
     }
 }
 
+fn mutation_parse_failure(
+    mutation_parse_outcome: &HookMutationParseOutcome,
+) -> Option<HookDispatchFailure> {
+    let HookMutationParseOutcome::Invalid(error) = mutation_parse_outcome else {
+        return None;
+    };
+
+    Some(HookDispatchFailure::InvalidMutationOutput {
+        message: format_hook_mutation_parse_error(error),
+    })
+}
+
 fn max_retry_attempts_for_suspend_mode(suspend_mode: HookSuspendMode) -> u32 {
     match suspend_mode {
         HookSuspendMode::WaitForResume => 1,
@@ -2792,6 +2811,9 @@ enum HookDispatchFailure {
         timed_out: bool,
     },
     HookExecutionError {
+        message: String,
+    },
+    InvalidMutationOutput {
         message: String,
     },
 }
@@ -3202,9 +3224,31 @@ fn execute_hook_attempt(
 ) -> HookDispatchOutcome {
     match hook_executor.run(request.clone()) {
         Ok(run_result) => {
-            let disposition = classify_hook_disposition(on_error, &run_result);
+            let run_disposition = classify_hook_disposition(on_error, &run_result);
             let mutation_parse_outcome =
                 parse_hook_mutation_stdout(mutate, hook_name, &run_result.stdout.content);
+            let mutation_failure = if run_disposition == HookDisposition::Pass {
+                mutation_parse_failure(&mutation_parse_outcome)
+            } else {
+                None
+            };
+
+            let disposition = if mutation_failure.is_some() {
+                disposition_from_on_error(on_error)
+            } else {
+                run_disposition
+            };
+
+            let failure = if let Some(mutation_failure) = mutation_failure {
+                Some(mutation_failure)
+            } else if run_disposition == HookDisposition::Pass {
+                None
+            } else {
+                Some(HookDispatchFailure::HookRunFailed {
+                    exit_code: run_result.exit_code,
+                    timed_out: run_result.timed_out,
+                })
+            };
 
             event_loop.log_hook_run_telemetry(HookRunTelemetryEntry::from_run_result(
                 loop_id,
@@ -3217,28 +3261,25 @@ fn execute_hook_attempt(
                 &run_result,
             ));
 
-            let failure = if disposition == HookDisposition::Pass {
+            if disposition == HookDisposition::Pass {
                 debug!(
                     phase_event = %phase_event_key,
                     hook_name = %hook_name,
                     duration_ms = run_result.duration_ms,
                     "Lifecycle hook executed successfully"
                 );
-                None
             } else {
+                let failure_detail = format_hook_failure_detail(failure.as_ref());
                 warn!(
                     phase_event = %phase_event_key,
                     hook_name = %hook_name,
                     disposition = ?disposition,
                     exit_code = ?run_result.exit_code,
                     timed_out = run_result.timed_out,
+                    failure = %failure_detail,
                     "Lifecycle hook returned non-pass disposition; continuing"
                 );
-                Some(HookDispatchFailure::HookRunFailed {
-                    exit_code: run_result.exit_code,
-                    timed_out: run_result.timed_out,
-                })
-            };
+            }
 
             HookDispatchOutcome {
                 phase_event,
@@ -3571,6 +3612,9 @@ fn format_hook_failure_detail(failure: Option<&HookDispatchFailure>) -> String {
         }
         Some(HookDispatchFailure::HookExecutionError { message }) => {
             format!("hook execution failed: {message}")
+        }
+        Some(HookDispatchFailure::InvalidMutationOutput { message }) => {
+            format!("invalid mutation output: {message}")
         }
         None => "hook failed without failure details".to_string(),
     }
@@ -5152,6 +5196,261 @@ printf '%s\n' "$payload" >> "$1""#
             }
             other => panic!("expected execution error failure context, got {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dispatch_phase_event_hooks_mutation_parse_warn_continues_through_block_gate() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        let mut warn_hook = hook_spec_with_command_and_on_error(
+            "warn-invalid-mutation",
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf '%s' 'oops'".to_string(),
+            ],
+            HookOnError::Warn,
+        );
+        warn_hook.mutate = hook_mutation_config(true);
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(HookPhaseEvent::PreLoopStart, vec![warn_hook]);
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+
+        let outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreLoopStart,
+            build_loop_start_payload_input("loop-test", &loop_ctx, 5, 1, Some("ralph".to_string())),
+        );
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].disposition, HookDisposition::Warn);
+        assert!(matches!(
+            outcomes[0].mutation_parse_outcome,
+            HookMutationParseOutcome::Invalid(_)
+        ));
+        assert!(matches!(
+            &outcomes[0].failure,
+            Some(HookDispatchFailure::InvalidMutationOutput { message })
+            if message.contains("not valid JSON")
+        ));
+        assert!(fail_if_blocking_loop_start_outcomes(&outcomes).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dispatch_phase_event_hooks_mutation_parse_block_surfaces_invalid_output_reason() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        let mut block_hook = hook_spec_with_command_and_on_error(
+            "block-invalid-mutation",
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf '%s' 'oops'".to_string(),
+            ],
+            HookOnError::Block,
+        );
+        block_hook.mutate = hook_mutation_config(true);
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(HookPhaseEvent::PreLoopStart, vec![block_hook]);
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+
+        let outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreLoopStart,
+            build_loop_start_payload_input("loop-test", &loop_ctx, 5, 1, Some("ralph".to_string())),
+        );
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].disposition, HookDisposition::Block);
+        assert!(matches!(
+            &outcomes[0].failure,
+            Some(HookDispatchFailure::InvalidMutationOutput { message })
+            if message.contains("not valid JSON")
+        ));
+
+        let block_error = fail_if_blocking_loop_start_outcomes(&outcomes)
+            .expect_err("block disposition should fail loop.start boundary");
+        let block_message = block_error.to_string();
+        assert!(block_message.contains("block-invalid-mutation"));
+        assert!(block_message.contains("pre.loop.start"));
+        assert!(block_message.contains("invalid mutation output"));
+        assert!(block_message.contains("not valid JSON"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dispatch_phase_event_hooks_runtime_failure_takes_precedence_over_mutation_parse_error()
+    {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        let mut block_hook = hook_spec_with_command_and_on_error(
+            "block-runtime-failure",
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf '%s' 'oops'; exit 23".to_string(),
+            ],
+            HookOnError::Block,
+        );
+        block_hook.mutate = hook_mutation_config(true);
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(HookPhaseEvent::PreLoopStart, vec![block_hook]);
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+
+        let outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreLoopStart,
+            build_loop_start_payload_input("loop-test", &loop_ctx, 5, 1, Some("ralph".to_string())),
+        );
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].disposition, HookDisposition::Block);
+        assert_eq!(
+            outcomes[0].failure,
+            Some(HookDispatchFailure::HookRunFailed {
+                exit_code: Some(23),
+                timed_out: false,
+            })
+        );
+        assert!(matches!(
+            outcomes[0].mutation_parse_outcome,
+            HookMutationParseOutcome::Invalid(_)
+        ));
+
+        let block_error = fail_if_blocking_loop_start_outcomes(&outcomes)
+            .expect_err("block disposition should fail loop.start boundary");
+        let block_message = block_error.to_string();
+        assert!(block_message.contains("hook exited with code 23"));
+        assert!(!block_message.contains("invalid mutation output"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dispatch_phase_event_hooks_mutation_parse_suspend_uses_wait_for_resume_gate() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+
+        let mut suspend_hook = hook_spec_with_command_and_on_error(
+            "suspend-invalid-mutation",
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf '%s' 'oops'".to_string(),
+            ],
+            HookOnError::Suspend,
+        );
+        suspend_hook.mutate = hook_mutation_config(true);
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(HookPhaseEvent::PreIterationStart, vec![suspend_hook]);
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+        let suspend_state_store = SuspendStateStore::new(temp_dir.path());
+
+        let outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreIterationStart,
+            build_iteration_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                1,
+                Some("planner".to_string()),
+                None,
+                None,
+            ),
+        );
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].disposition, HookDisposition::Suspend);
+        assert!(matches!(
+            &outcomes[0].failure,
+            Some(HookDispatchFailure::InvalidMutationOutput { message })
+            if message.contains("not valid JSON")
+        ));
+        assert!(fail_if_blocking_iteration_start_outcomes(&outcomes).is_ok());
+
+        let resume_store = suspend_state_store.clone();
+        let resume_handle = std::thread::spawn(move || {
+            let wait_started_at = std::time::Instant::now();
+            while !resume_store.suspend_state_path().exists() {
+                assert!(
+                    wait_started_at.elapsed() < Duration::from_secs(2),
+                    "suspend-state should be written before resume"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            let suspend_state = resume_store
+                .read_suspend_state()
+                .expect("read suspend-state")
+                .expect("suspend-state should exist while waiting");
+            assert!(suspend_state.reason.contains("invalid mutation output"));
+            assert!(suspend_state.reason.contains("not valid JSON"));
+
+            resume_store
+                .write_resume_requested()
+                .expect("write resume signal");
+        });
+
+        let wait_result = block_on_test_future(wait_for_resume_if_suspended(
+            &outcomes,
+            "loop-test",
+            &suspend_state_store,
+        ))
+        .expect("wait helper should succeed");
+
+        resume_handle
+            .join()
+            .expect("resume helper thread should not panic");
+
+        assert_eq!(wait_result, None);
+        assert!(
+            suspend_state_store
+                .read_suspend_state()
+                .expect("read suspend-state after resume")
+                .is_none(),
+            "suspend-state should be cleared after resume"
+        );
+        assert!(
+            !suspend_state_store.resume_requested_path().exists(),
+            "resume-requested should be consumed after resume"
+        );
     }
 
     #[cfg(unix)]

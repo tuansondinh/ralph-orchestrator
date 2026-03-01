@@ -4897,16 +4897,118 @@ printf '%s\n' "$payload" >> "$1""#
 
     #[cfg(unix)]
     #[test]
-    fn test_hook_mutation_metadata_accumulates_into_following_lifecycle_payloads() {
+    fn test_ac13_mutation_disabled_json_output_is_inert_for_accumulator_and_downstream_payloads() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let payload_log_path = temp_dir.path().join("hook-metadata-payloads.jsonl");
+        let payload_log_path = temp_dir
+            .path()
+            .join("hook-metadata-disabled-payloads.jsonl");
+
+        let mut disabled_mutation_spec = hook_spec_with_command(
+            "metadata-emitter",
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf '%s' '{\"metadata\":{\"risk_score\":0.72}}'".to_string(),
+            ],
+        );
+        disabled_mutation_spec.mutate = hook_mutation_config(false);
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(HookPhaseEvent::PreLoopStart, vec![disabled_mutation_spec]);
+        events.insert(
+            HookPhaseEvent::PostLoopStart,
+            vec![payload_recording_hook(
+                "payload-recorder",
+                &payload_log_path,
+            )],
+        );
+
+        let hook_engine = hook_engine_with_events(events);
+        let hook_executor = HookExecutor::new();
+        let event_loop = dispatch_test_event_loop(temp_dir.path());
+        let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
+        let mut accumulated_hook_metadata = serde_json::Map::new();
+        accumulated_hook_metadata.insert("upstream".to_string(), serde_json::json!("preserved"));
+
+        let pre_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PreLoopStart,
+            super::build_loop_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                0,
+                Some("planner".to_string()),
+                &accumulated_hook_metadata,
+            ),
+        );
+
+        assert_eq!(pre_outcomes.len(), 1);
+        assert_eq!(pre_outcomes[0].disposition, HookDisposition::Pass);
+        assert_eq!(pre_outcomes[0].failure, None);
+        assert_eq!(
+            pre_outcomes[0].mutation_parse_outcome,
+            HookMutationParseOutcome::Disabled
+        );
+
+        let metadata_before_merge = accumulated_hook_metadata.clone();
+        merge_accumulated_hook_metadata_from_outcomes(
+            &mut accumulated_hook_metadata,
+            &pre_outcomes,
+        );
+        assert_eq!(accumulated_hook_metadata, metadata_before_merge);
+
+        let post_outcomes = dispatch_phase_event_hooks(
+            &event_loop,
+            true,
+            "loop-test",
+            &hook_engine,
+            &hook_executor,
+            HookPhaseEvent::PostLoopStart,
+            super::build_loop_start_payload_input(
+                "loop-test",
+                &loop_ctx,
+                5,
+                0,
+                Some("planner".to_string()),
+                &accumulated_hook_metadata,
+            ),
+        );
+        merge_accumulated_hook_metadata_from_outcomes(
+            &mut accumulated_hook_metadata,
+            &post_outcomes,
+        );
+
+        let payloads = read_hook_payload_log(&payload_log_path);
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            payloads[0]["metadata"]["accumulated"],
+            serde_json::json!({"upstream":"preserved"})
+        );
+
+        let payload_accumulated = payloads[0]["metadata"]["accumulated"]
+            .as_object()
+            .expect("metadata.accumulated object");
+        assert!(!payload_accumulated.contains_key("hook_metadata"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_ac14_mutation_enabled_updates_only_namespaced_metadata_in_downstream_payloads() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let payload_log_path = temp_dir.path().join("hook-metadata-enabled-payloads.jsonl");
 
         let mut mutation_spec = hook_spec_with_command(
             "metadata-emitter",
             vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "printf '%s' '{\"metadata\":{\"risk_score\":0.72}}'".to_string(),
+                "printf '%s' '{\"metadata\":{\"risk_score\":0.72,\"gates\":[\"policy_check\"]}}'"
+                    .to_string(),
             ],
         );
         mutation_spec.mutate = hook_mutation_config(true);
@@ -4926,6 +5028,7 @@ printf '%s\n' "$payload" >> "$1""#
         let event_loop = dispatch_test_event_loop(temp_dir.path());
         let loop_ctx = LoopContext::primary(temp_dir.path().to_path_buf());
         let mut accumulated_hook_metadata = serde_json::Map::new();
+        accumulated_hook_metadata.insert("upstream".to_string(), serde_json::json!("preserved"));
 
         let pre_outcomes = dispatch_phase_event_hooks(
             &event_loop,
@@ -4953,8 +5056,16 @@ printf '%s\n' "$payload" >> "$1""#
             &pre_outcomes,
         );
         assert_eq!(
-            accumulated_hook_metadata["hook_metadata"]["metadata-emitter"]["risk_score"],
-            serde_json::json!(0.72)
+            serde_json::Value::Object(accumulated_hook_metadata.clone()),
+            serde_json::json!({
+                "upstream": "preserved",
+                "hook_metadata": {
+                    "metadata-emitter": {
+                        "risk_score": 0.72,
+                        "gates": ["policy_check"]
+                    }
+                }
+            })
         );
 
         let post_outcomes = dispatch_phase_event_hooks(
@@ -4980,10 +5091,43 @@ printf '%s\n' "$payload" >> "$1""#
 
         let payloads = read_hook_payload_log(&payload_log_path);
         assert_eq!(payloads.len(), 1);
+        let payload = &payloads[0];
+
+        assert_eq!(payload["phase_event"], serde_json::json!("post.loop.start"));
         assert_eq!(
-            payloads[0]["metadata"]["accumulated"]["hook_metadata"]["metadata-emitter"]["risk_score"],
-            serde_json::json!(0.72)
+            payload["context"]["active_hat"],
+            serde_json::json!("planner")
         );
+        assert_eq!(
+            payload["metadata"]["accumulated"],
+            serde_json::json!({
+                "upstream": "preserved",
+                "hook_metadata": {
+                    "metadata-emitter": {
+                        "risk_score": 0.72,
+                        "gates": ["policy_check"]
+                    }
+                }
+            })
+        );
+
+        let payload_object = payload.as_object().expect("payload object");
+        assert!(!payload_object.contains_key("prompt"));
+        assert!(!payload_object.contains_key("events"));
+        assert!(!payload_object.contains_key("config"));
+
+        let context = payload["context"]
+            .as_object()
+            .expect("payload context object");
+        assert!(!context.contains_key("prompt"));
+        assert!(!context.contains_key("events"));
+        assert!(!context.contains_key("config"));
+
+        let payload_accumulated = payload["metadata"]["accumulated"]
+            .as_object()
+            .expect("metadata.accumulated object");
+        assert!(!payload_accumulated.contains_key("risk_score"));
+        assert!(!payload_accumulated.contains_key("gates"));
     }
 
     #[cfg(unix)]
@@ -5198,9 +5342,10 @@ printf '%s\n' "$payload" >> "$1""#
         }
     }
 
+    // AC-15: JSON-only mutation format errors must flow through lifecycle on_error dispositions.
     #[cfg(unix)]
     #[test]
-    fn test_dispatch_phase_event_hooks_mutation_parse_warn_continues_through_block_gate() {
+    fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_warn_continues_through_block_gate() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
 
         let mut warn_hook = hook_spec_with_command_and_on_error(
@@ -5248,7 +5393,8 @@ printf '%s\n' "$payload" >> "$1""#
 
     #[cfg(unix)]
     #[test]
-    fn test_dispatch_phase_event_hooks_mutation_parse_block_surfaces_invalid_output_reason() {
+    fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_block_surfaces_invalid_output_reason()
+    {
         let temp_dir = tempfile::tempdir().expect("temp dir");
 
         let mut block_hook = hook_spec_with_command_and_on_error(
@@ -5355,7 +5501,7 @@ printf '%s\n' "$payload" >> "$1""#
 
     #[cfg(unix)]
     #[test]
-    fn test_dispatch_phase_event_hooks_mutation_parse_suspend_uses_wait_for_resume_gate() {
+    fn test_ac15_dispatch_phase_event_hooks_non_json_mutation_suspend_uses_wait_for_resume_gate() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
 
         let mut suspend_hook = hook_spec_with_command_and_on_error(

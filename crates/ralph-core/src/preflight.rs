@@ -1097,6 +1097,34 @@ fn format_config_warnings(warnings: &[ConfigWarning]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{HookMutationConfig, HookOnError, HookPhaseEvent, HookSpec};
+
+    fn hook_spec(name: &str, command: &[&str]) -> HookSpec {
+        HookSpec {
+            name: name.to_string(),
+            command: command.iter().map(|part| (*part).to_string()).collect(),
+            cwd: None,
+            env: HashMap::new(),
+            timeout_seconds: None,
+            max_output_bytes: None,
+            on_error: Some(HookOnError::Block),
+            suspend_mode: None,
+            mutate: HookMutationConfig::default(),
+            extra: HashMap::new(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn mark_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("set executable bit");
+    }
+
+    #[cfg(not(unix))]
+    fn mark_executable(_path: &std::path::Path) {}
 
     #[tokio::test]
     async fn report_counts_statuses() {
@@ -1119,6 +1147,92 @@ mod tests {
         let check_names = runner.check_names();
 
         assert!(check_names.contains(&"hooks"));
+    }
+
+    #[tokio::test]
+    async fn hooks_check_skips_when_hooks_are_disabled() {
+        let config = RalphConfig::default();
+        let check = HooksValidationCheck;
+
+        let result = check.run(&config).await;
+
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert_eq!(result.name, "hooks");
+        assert!(result.label.contains("skipping"));
+    }
+
+    #[tokio::test]
+    async fn hooks_check_passes_with_resolvable_executable_command() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script_dir = temp.path().join("scripts/hooks");
+        std::fs::create_dir_all(&script_dir).expect("create script directory");
+
+        let script_path = script_dir.join("env-guard.sh");
+        std::fs::write(&script_path, "#!/usr/bin/env sh\nexit 0\n").expect("write script");
+        mark_executable(&script_path);
+
+        let mut config = RalphConfig::default();
+        config.core.workspace_root = temp.path().to_path_buf();
+        config.hooks.enabled = true;
+        config.hooks.events.insert(
+            HookPhaseEvent::PreLoopStart,
+            vec![hook_spec("env-guard", &["./scripts/hooks/env-guard.sh"])],
+        );
+
+        let check = HooksValidationCheck;
+        let result = check.run(&config).await;
+
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(result.label.contains("Hooks validation passed"));
+        assert!(result.label.contains("1 hook(s)"));
+        assert!(result.message.is_none());
+    }
+
+    #[tokio::test]
+    async fn hooks_check_fails_with_actionable_duplicate_and_command_diagnostics() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let mut config = RalphConfig::default();
+        config.core.workspace_root = temp.path().to_path_buf();
+        config.hooks.enabled = true;
+        config.hooks.events.insert(
+            HookPhaseEvent::PreLoopStart,
+            vec![
+                hook_spec("dup-hook", &["./scripts/hooks/missing-one.sh"]),
+                hook_spec("dup-hook", &["./scripts/hooks/missing-two.sh"]),
+            ],
+        );
+
+        let check = HooksValidationCheck;
+        let result = check.run(&config).await;
+
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert!(result.label.contains("Hooks validation failed"));
+        let message = result.message.expect("expected failure diagnostics");
+        assert!(message.contains("duplicate hook name 'dup-hook'"));
+        assert!(message.contains("file does not exist"));
+        assert!(message.contains("Fix: ensure command exists and is executable"));
+    }
+
+    #[tokio::test]
+    async fn run_selected_can_skip_hooks_check_failures() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let mut config = RalphConfig::default();
+        config.core.workspace_root = temp.path().to_path_buf();
+        config.hooks.enabled = true;
+        config.hooks.events.insert(
+            HookPhaseEvent::PreLoopStart,
+            vec![hook_spec("broken-hook", &["./scripts/hooks/missing.sh"])],
+        );
+
+        let runner = PreflightRunner::default_checks();
+        let report = runner.run_selected(&config, &["config".to_string()]).await;
+
+        assert!(report.passed);
+        assert_eq!(report.failures, 0);
+        assert_eq!(report.checks.len(), 1);
+        assert_eq!(report.checks[0].name, "config");
     }
 
     #[tokio::test]

@@ -455,6 +455,7 @@ fn validate_core_config_shape(value: &Value, label: &str) -> Result<()> {
 }
 
 const ALLOWED_HATS_TOP_LEVEL: &[&str] = &["hats", "events", "event_loop", "name", "description"];
+const ALLOWED_HATS_EVENT_LOOP_OVERLAY_KEYS: &[&str] = &["completion_promise", "starting_event"];
 
 fn hats_disallowed_keys(mapping: &Mapping) -> Vec<String> {
     let mut disallowed = Vec::new();
@@ -532,7 +533,11 @@ fn merge_hats_overlay(mut core: Value, hats: Value) -> Result<Value> {
             .ok_or_else(|| anyhow::anyhow!("core.event_loop must be a mapping when provided"))?;
 
         for (key, value) in overlay_mapping {
-            event_loop_mapping.insert(key.clone(), value.clone());
+            if let Some(key_str) = key.as_str()
+                && ALLOWED_HATS_EVENT_LOOP_OVERLAY_KEYS.contains(&key_str)
+            {
+                event_loop_mapping.insert(key.clone(), value.clone());
+            }
         }
 
         mapping_insert(
@@ -717,6 +722,42 @@ hats:
         assert_eq!(config.event_loop.completion_promise, "REVIEW_COMPLETE");
         assert!(config.hats.contains_key("reviewer"));
         assert!(!config.hats.contains_key("builder"));
+    }
+
+    #[test]
+    fn merge_hats_overlay_ignores_runtime_limits_from_hats_event_loop() {
+        let core: Value = serde_yaml::from_str(
+            r"
+event_loop:
+  max_iterations: 100
+  max_runtime_seconds: 28800
+  completion_promise: LOOP_COMPLETE
+hats:
+  builder:
+    name: Builder
+",
+        )
+        .unwrap();
+
+        let hats: Value = serde_yaml::from_str(
+            r"
+event_loop:
+  completion_promise: REVIEW_COMPLETE
+  max_iterations: 150
+  max_runtime_seconds: 14400
+hats:
+  reviewer:
+    name: Reviewer
+",
+        )
+        .unwrap();
+
+        let merged = merge_hats_overlay(core, hats).unwrap();
+        let config: RalphConfig = serde_yaml::from_value(merged).unwrap();
+
+        assert_eq!(config.event_loop.max_iterations, 100);
+        assert_eq!(config.event_loop.max_runtime_seconds, 28800);
+        assert_eq!(config.event_loop.completion_promise, "REVIEW_COMPLETE");
     }
 
     #[tokio::test]

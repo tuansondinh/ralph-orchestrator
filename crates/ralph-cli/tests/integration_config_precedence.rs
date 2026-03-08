@@ -244,6 +244,101 @@ fn test_hats_file_event_loop_completion_promise_overrides_combined_config() {
     );
 }
 
+/// Runtime limits (`max_iterations`, `max_runtime_seconds`) should come from
+/// core config (`-c`) and not be overridden by hats source (`-H`). Hats may
+/// override workflow keys like completion promise, but not runtime caps.
+#[test]
+fn test_hats_file_does_not_override_runtime_limits_from_combined_config() {
+    let dir = TempDir::new().expect("temp dir");
+    let config_path = dir.path().join("ralph.yml");
+    let hats_path = dir.path().join("hats.yml");
+
+    fs::write(
+        &config_path,
+        r#"cli:
+  backend: claude
+event_loop:
+  max_iterations: 10
+  max_runtime_seconds: 28800
+  completion_promise: "CORE_DONE"
+  prompt: "placeholder"
+core:
+  specs_dir: "./specs/"
+hats:
+  from_core:
+    name: "from_core"
+    description: "core hat"
+    triggers: ["design.start"]
+    publishes: ["CORE_DONE"]
+    default_publishes: "CORE_DONE"
+    instructions: |
+      Core hat
+"#,
+    )
+    .expect("write combined config");
+
+    fs::write(
+        &hats_path,
+        r#"event_loop:
+  starting_event: "design.start"
+  completion_promise: "HATS_DONE"
+  max_iterations: 150
+  max_runtime_seconds: 14400
+hats:
+  from_hats:
+    name: "from_hats"
+    description: "hats override"
+    triggers: ["design.start"]
+    publishes: ["HATS_DONE"]
+    default_publishes: "HATS_DONE"
+    instructions: |
+      Hats hat
+"#,
+    )
+    .expect("write hats file");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_ralph"))
+        .args([
+            "--color",
+            "never",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--hats",
+            hats_path.to_str().unwrap(),
+            "run",
+            "--dry-run",
+            "--skip-preflight",
+            "--prompt",
+            "test runtime precedence",
+            "--backend",
+            "claude",
+            "--no-tui",
+        ])
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("execute ralph");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "expected success; stderr: {stderr}\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Completion promise: HATS_DONE"),
+        "expected completion promise from hats; got stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Max iterations: 10"),
+        "expected max_iterations from core config; got stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Max runtime: 28800s"),
+        "expected max_runtime_seconds from core config; got stdout: {stdout}"
+    );
+}
+
 /// A `core.specs_dir=...` CLI override must be applied last (after both `-c`
 /// and `-H` are merged), overriding whatever value was in the combined config.
 #[test]

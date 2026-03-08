@@ -1826,6 +1826,65 @@ hats:
 }
 
 #[test]
+fn test_get_active_hat_id_prefers_progressed_hat_over_stale_start_event() {
+    // Repro for issue #225:
+    // after the initial build.start has already been consumed, a stray build.start
+    // can remain pending alongside the correct downstream event. The next visible
+    // hat should be the progressed hat (unit_test_writer), not the stale starter.
+    let yaml = r#"
+event_loop:
+  starting_event: "build.start"
+hats:
+  unit_test_researcher:
+    name: "🔬 Unit Test Researcher"
+    triggers: ["build.start"]
+    publishes: ["unit_test_research.complete"]
+  unit_test_writer:
+    name: "🧪 Unit Test Writer"
+    triggers: ["unit_test_research.complete"]
+    publishes: ["unit_tests.written"]
+"#;
+    let config: RalphConfig = serde_yaml::from_str(yaml).unwrap();
+    let mut event_loop = EventLoop::new(config);
+
+    event_loop.initialize("Spec: specs/example/spec.md");
+
+    // Iteration 1 starts on the researcher via the initial build.start.
+    assert_eq!(
+        event_loop.get_active_hat_id().as_str(),
+        "unit_test_researcher",
+        "Initial build.start should activate the researcher"
+    );
+
+    // Ralph then consumes that initial build.start during prompt construction.
+    let _prompt = event_loop.build_prompt(&HatId::new("ralph")).unwrap();
+    assert!(
+        event_loop
+            .bus
+            .peek_pending(&HatId::new("unit_test_researcher"))
+            .is_none_or(|events| events.is_empty()),
+        "Initial build.start should be consumed before the next iteration"
+    );
+
+    // Reproduce the issue comment's state: a stray build.start is present alongside
+    // the correct downstream completion event for the next hat.
+    event_loop
+        .bus
+        .publish(Event::new("build.start", "Spec: specs/example/spec.md"));
+    event_loop.bus.publish(Event::new(
+        "unit_test_research.complete",
+        "Research document written",
+    ));
+
+    let active_hat_id = event_loop.get_active_hat_id();
+    assert_eq!(
+        active_hat_id.as_str(),
+        "unit_test_writer",
+        "Display should advance to unit_test_writer once unit_test_research.complete is pending, even if a stale build.start is also present"
+    );
+}
+
+#[test]
 fn test_check_for_user_prompt_detects_user_prompt_event() {
     // Create EventLoop
     let config: RalphConfig = serde_yaml::from_str("hats: {}").unwrap();

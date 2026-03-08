@@ -1449,6 +1449,8 @@ impl EventLoop {
     /// Returns the first active hat, or "ralph" if no specific hat is active.
     /// BTreeMap iteration is already sorted by key.
     pub fn get_active_hat_id(&self) -> HatId {
+        let mut entrypoint_hat = None;
+
         // Peek at pending events (don't consume them)
         for hat_id in self.bus.hat_ids() {
             let Some(events) = self.bus.peek_pending(hat_id) else {
@@ -1458,10 +1460,21 @@ impl EventLoop {
                 continue;
             };
             if let Some(active_hat) = self.registry.get_for_topic(event.topic.as_str()) {
+                if self.is_entrypoint_topic(event.topic.as_str()) {
+                    entrypoint_hat.get_or_insert_with(|| active_hat.id.clone());
+                    continue;
+                }
                 return active_hat.id.clone();
             }
         }
-        HatId::new("ralph")
+
+        entrypoint_hat.unwrap_or_else(|| HatId::new("ralph"))
+    }
+
+    fn is_entrypoint_topic(&self, topic: &str) -> bool {
+        topic == "task.start"
+            || topic == "task.resume"
+            || self.config.event_loop.starting_event.as_deref() == Some(topic)
     }
 
     /// Injects a default event for a hat when the agent wrote no events.

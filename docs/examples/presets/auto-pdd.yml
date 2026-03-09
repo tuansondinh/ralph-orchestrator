@@ -1,3 +1,6 @@
+# Prompt-Driven Development (PDD) turns a rough idea into a reviewed design package
+# by refining requirements, documenting assumptions, and producing an
+# implementation-ready design before coding begins.
 # PDD Example: Automated Requirements Interview -> Design Package
 # Pattern: Simulated Interview With Adversarial Design Review
 # Example-only workflow that automates the front half of PDD and stops at a reviewed design.
@@ -5,7 +8,7 @@
 # This is intentionally NOT a shipped builtin preset.
 #
 # Usage:
-#   ralph run --config docs/examples/presets/PDD.yml --prompt "Design a CLI tool for ..."
+#   ralph run --config docs/examples/presets/auto-pdd.yml --prompt "Design a CLI tool for ..."
 
 event_loop:
   prompt_file: "PROMPT.md"
@@ -20,7 +23,7 @@ cli:
   prompt_mode: "arg"
 
 core:
-  specs_dir: "./specs/"
+  specs_dir: ".agents/planning/"
   guardrails:
     - "Fresh context each iteration. Persist assumptions and decisions to disk."
     - "Stay in design mode only. Do not write production code or code-task files."
@@ -41,14 +44,14 @@ hats:
       Your job is to expose ambiguity, missing scope boundaries, and unstated constraints.
 
       ### Storage Layout
-      On first trigger, establish the task identity:
-      1. Derive `task_name` from the original prompt using kebab-case.
-      2. Create `specs/{task_name}/`.
-      3. Write the original prompt to `specs/{task_name}/rough-idea.md`.
-      4. Create or append to `specs/{task_name}/requirements-interview.md`.
+      On first trigger, establish the spec identity:
+      1. Derive `spec_name` from the original prompt using kebab-case.
+      2. Create `.agents/planning/{spec_name}/`.
+      3. Write the original prompt to `.agents/planning/{spec_name}/rough-idea.md`.
+      4. Create or append to `.agents/planning/{spec_name}/idea-honing.md`.
 
       ### Process
-      1. Read the original prompt, prior interview transcript, and any design-review feedback.
+      1. Read the original prompt, prior idea-honing transcript, and any design-review feedback.
       2. Identify the single highest-value unresolved question.
       3. Ask exactly one concrete question for the Requirements Owner to answer.
       4. Publish `requirements.questioned`.
@@ -90,7 +93,7 @@ hats:
       Answer as a pragmatic product owner who wants a useful, defensible design from an imperfect brief.
 
       ### Storage Layout
-      Append every Q&A pair to `specs/{task_name}/requirements-interview.md`.
+      Append every Q&A pair to `.agents/planning/{spec_name}/idea-honing.md`.
 
       ### Process
       1. Read the original prompt, the latest question, and the existing interview transcript.
@@ -124,7 +127,7 @@ hats:
       The output should be strong enough for a later implementation workflow to consume.
 
       ### Storage Layout
-      Write artifacts in `specs/{task_name}/`:
+      Write artifacts in `.agents/planning/{spec_name}/`:
       - `requirements.md` — Consolidated requirements and assumptions
       - `design.md` — Full design package
 
@@ -174,9 +177,9 @@ hats:
 
       ### Review Inputs
       Read:
-      - `specs/{task_name}/requirements-interview.md`
-      - `specs/{task_name}/requirements.md`
-      - `specs/{task_name}/design.md`
+      - `.agents/planning/{spec_name}/idea-honing.md`
+      - `.agents/planning/{spec_name}/requirements.md`
+      - `.agents/planning/{spec_name}/design.md`
 
       ### Review Checklist
       Reject the design if any of these are weak:

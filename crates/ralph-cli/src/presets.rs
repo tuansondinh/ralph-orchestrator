@@ -230,6 +230,13 @@ mod tests {
         let config =
             RalphConfig::parse_yaml(preset.content).expect("embedded preset YAML should parse");
 
+        assert!(
+            preset
+                .content
+                .contains(".agents/planning/{spec_name}/idea-honing.md")
+        );
+        assert!(!preset.content.contains("requirements-interview.md"));
+
         assert_eq!(
             config.event_loop.required_events,
             vec![
@@ -300,6 +307,62 @@ mod tests {
             .expect("committer hat should exist");
         assert_eq!(committer.default_publishes, None);
         assert_eq!(committer.publishes, vec!["LOOP_COMPLETE".to_string()]);
+    }
+
+    #[test]
+    fn test_code_assist_uses_shared_planning_dir_and_builder_workflow() {
+        let preset = get_preset("code-assist").expect("code-assist should exist");
+        let config =
+            RalphConfig::parse_yaml(preset.content).expect("embedded preset YAML should parse");
+
+        assert_eq!(config.core.specs_dir, ".agents/planning/");
+        assert_eq!(
+            config.event_loop.required_events,
+            vec!["review.passed".to_string()]
+        );
+
+        let planner = config
+            .hats
+            .get("planner")
+            .expect("planner hat should exist");
+        assert!(
+            planner
+                .instructions
+                .contains(".agents/planning/{task_name}/")
+        );
+        assert!(planner.instructions.contains("context.md"));
+        assert!(planner.instructions.contains("plan.md"));
+        assert!(planner.instructions.contains("progress.md"));
+
+        let builder = config
+            .hats
+            .get("builder")
+            .expect("builder hat should exist");
+        assert!(
+            builder
+                .instructions
+                .contains("Read `CODEASSIST.md` if it exists in the repo root")
+        );
+        assert!(builder.instructions.contains(
+            "Keep documentation in the shared docs directory and code in the repo itself"
+        ));
+        assert!(builder.instructions.contains("VALIDATE THE INCREMENT"));
+        assert!(
+            builder
+                .instructions
+                .contains("You MUST keep implementation code out of the shared docs directory")
+        );
+
+        let finalizer = config
+            .hats
+            .get("finalizer")
+            .expect("finalizer hat should exist");
+        assert!(
+            finalizer
+                .instructions
+                .contains("shared documentation directory")
+        );
+        assert!(finalizer.instructions.contains("plan.md`, `progress.md`"));
     }
 
     #[test]
@@ -420,11 +483,7 @@ mod tests {
                 .instructions
                 .contains("On `hypothesis.confirmed`:")
         );
-        assert!(
-            investigator
-                .instructions
-                .contains("emit `fix.propose`")
-        );
+        assert!(investigator.instructions.contains("emit `fix.propose`"));
         assert!(investigator.instructions.contains("On `fix.verified`:"));
         assert!(
             investigator

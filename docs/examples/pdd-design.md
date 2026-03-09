@@ -1,7 +1,7 @@
 # Automated PDD Design Example
 
 !!! note "Example Only"
-    `docs/examples/presets/PDD.yml` is an example workflow, not a supported builtin preset.
+    `docs/examples/presets/auto-pdd.yml` is an example workflow, not a supported builtin preset.
 
 ## Overview
 
@@ -18,7 +18,7 @@ Once the interview is complete, a `PDD Author` writes the design package and a `
 The workflow writes a PDD-style package under `specs/{task_name}/`:
 
 - `rough-idea.md`
-- `requirements-interview.md`
+- `idea-honing.md`
 - `requirements.md`
 - `design.md`
 
@@ -27,7 +27,7 @@ It does not generate implementation tasks or write code.
 ## Usage
 
 ```bash
-ralph run --config docs/examples/presets/PDD.yml --prompt "Design a resilient import pipeline for CSV uploads"
+ralph run --config docs/examples/presets/auto-pdd.yml --prompt "Design a resilient import pipeline for CSV uploads"
 ```
 
 ## Why Use It

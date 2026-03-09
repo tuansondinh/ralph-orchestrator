@@ -9,7 +9,7 @@ This example demonstrates a specification-first workflow, where requirements are
 
 If you want a supported builtin today, start with `builtin:code-assist` for implementation work or `builtin:pdd-to-code-assist` for the longer idea-to-code flow.
 
-If you specifically want an example-only automated design workflow, see [Automated PDD Design](pdd-design.md) and its example preset at `docs/examples/presets/PDD.yml`.
+If you specifically want an example-only automated design workflow, see [Automated PDD Design](pdd-design.md) and its example preset at `docs/examples/presets/auto-pdd.yml`.
 
 ## Workflow
 

@@ -36,7 +36,7 @@ cli:
   prompt_mode: "arg"
 
 core:
-  specs_dir: "./specs/"
+  specs_dir: ".agents/planning/"
   guardrails:
     - "Fresh context each iteration — save learnings to memories for next time"
     - "Verification is mandatory — tests/typecheck/lint/audit must pass"
@@ -61,16 +61,17 @@ hats:
       Your questions expose gaps, challenge assumptions, and force clarity.
 
       ### Storage Layout
-      On first trigger (design.start), establish the task identity:
-      1. Derive `task_name` from the auto-injected objective (kebab-case, e.g., "add-user-auth")
-      2. Create `specs/{task_name}/` directory
-      3. Write the objective to `specs/{task_name}/rough-idea.md`
+      On first trigger (design.start), establish the spec identity:
+      1. Derive `spec_name` from the auto-injected objective (kebab-case, e.g., "add-user-auth")
+      2. Create `.agents/planning/{spec_name}/` directory
+      3. Write the objective to `.agents/planning/{spec_name}/rough-idea.md`
+      4. Create or append to `.agents/planning/{spec_name}/idea-honing.md`
 
       ### Process
       1. Review context and previous Q&A
       2. Identify the most critical gap or ambiguity
       3. Ask ONE specific, answerable question
-      4. Record your question in the spec directory
+      4. Record your question in `.agents/planning/{spec_name}/idea-honing.md`
 
       ### Question Types (use strategically)
       - Scope: "What is explicitly OUT of scope?"
@@ -114,25 +115,27 @@ hats:
       then synthesize everything into a comprehensive design document.
 
       ### Storage Layout
-      Store design artifacts in `specs/{task_name}/`:
+      Store design artifacts in `.agents/planning/{spec_name}/`:
       - `rough-idea.md` — Original prompt/idea
-      - `requirements.md` — Consolidated Q&A from idea honing
+      - `idea-honing.md` — Question/answer transcript from idea honing
+      - `requirements.md` — Consolidated requirements and assumptions
       - `design.md` — The detailed design document
 
       ### When Triggered by question.asked
       1. Read the question carefully
       2. Research if needed (explore codebase, check patterns)
       3. Provide a clear, specific answer
-      4. Record Q&A in the requirements document
+      4. Append the answer to `.agents/planning/{spec_name}/idea-honing.md`
       5. Publish answer.proposed
 
       ### When Triggered by requirements.complete
       Synthesize all Q&A into a detailed design document.
 
-      1. First, write consolidated requirements to `specs/{task_name}/requirements.md`
-      2. Then, write the full design to `specs/{task_name}/design.md`
+      1. Read `.agents/planning/{spec_name}/rough-idea.md` and `.agents/planning/{spec_name}/idea-honing.md`
+      2. Write consolidated requirements to `.agents/planning/{spec_name}/requirements.md`
+      3. Then write the full design to `.agents/planning/{spec_name}/design.md`
 
-      Design Document Structure (write to `specs/{task_name}/design.md`):
+      Design Document Structure (write to `.agents/planning/{spec_name}/design.md`):
       1. **Overview** — Problem statement and solution summary
       2. **Detailed Requirements** — Consolidated from Q&A, each requirement numbered
       3. **Architecture Overview** — High-level system design with Mermaid diagram (REQUIRED)
@@ -179,7 +182,8 @@ hats:
       A weak design that slips through costs far more to fix in code.
 
       ### Storage Layout
-      Read design artifacts from `specs/{task_name}/`:
+      Read design artifacts from `.agents/planning/{spec_name}/`:
+      - `idea-honing.md` — Raw question/answer transcript
       - `design.md` — The design document to review
       - `requirements.md` — Requirements to validate against
 
@@ -238,17 +242,17 @@ hats:
       Find existing patterns, identify integration points, surface constraints.
 
       ### Storage Layout
-      Read design artifacts from `specs/{task_name}/`:
+      Read design artifacts from `.agents/planning/{spec_name}/`:
       - `design.md` — The detailed design to implement
       - `requirements.md` — The consolidated requirements
 
-      Write research findings to `specs/{task_name}/research/`:
+      Write research findings to `.agents/planning/{spec_name}/research/`:
       - `existing-patterns.md` — Similar features and coding conventions found
       - `technologies.md` — Libraries, frameworks, dependencies available
       - `broken-windows.md` — Low-risk code smells in touched files
       - Additional topic-specific files as needed
 
-      Write implementation context to `specs/{task_name}/context.md`:
+      Write implementation context to `.agents/planning/{spec_name}/context.md`:
       - Summary of research findings
       - Integration points and dependencies
       - Constraints and considerations
@@ -294,7 +298,7 @@ hats:
       - Performance optimizations requiring benchmarks
       - Anything requiring new tests to validate
 
-      Write findings to `specs/{task_name}/research/broken-windows.md`:
+      Write findings to `.agents/planning/{spec_name}/research/broken-windows.md`:
       ```markdown
       ## Broken Windows
 
@@ -333,11 +337,11 @@ hats:
       TDD means tests come first — plan them thoroughly.
 
       ### Storage Layout
-      Read from `specs/{task_name}/`:
+      Read from `.agents/planning/{spec_name}/`:
       - `design.md` — The approved design
       - `context.md` — Codebase patterns and integration points
 
-      Write implementation plan to `specs/{task_name}/plan.md`:
+      Write implementation plan to `.agents/planning/{spec_name}/plan.md`:
       - Test strategy (unit, integration, E2E scenarios)
       - Implementation steps in TDD order
       - Success criteria for each step
@@ -406,12 +410,12 @@ hats:
       Each task becomes a self-contained unit of work with clear acceptance criteria.
 
       ### Storage Layout
-      Read from `specs/{task_name}/`:
+      Read from `.agents/planning/{spec_name}/`:
       - `plan.md` — Implementation steps and test strategy
       - `design.md` — Architecture and component details
       - `context.md` — Codebase patterns to follow
 
-      Write code task files to `specs/{task_name}/tasks/`:
+      Write code task files to `.agents/planning/{spec_name}/tasks/`:
       - `task-01-{kebab-case-title}.code-task.md`
       - `task-02-{kebab-case-title}.code-task.md`
       - etc.
@@ -438,11 +442,11 @@ hats:
 
       ## Reference Documentation
       **Required:**
-      - Design: specs/{task_name}/design.md
+      - Design: .agents/planning/{spec_name}/design.md
 
       **Additional References:**
-      - specs/{task_name}/context.md (codebase patterns)
-      - specs/{task_name}/plan.md (overall strategy)
+      - .agents/planning/{spec_name}/context.md (codebase patterns)
+      - .agents/planning/{spec_name}/plan.md (overall strategy)
 
       **Note:** You MUST read the design document before beginning implementation.
 
@@ -477,12 +481,12 @@ hats:
       ```
 
       ### Process
-      1. Read the implementation plan from `specs/{task_name}/plan.md`
+      1. Read the implementation plan from `.agents/planning/{spec_name}/plan.md`
       2. For each step in the plan, create a code task file
       3. Extract acceptance criteria from the plan and convert to Given-When-Then format
       4. Include unit test requirements in each task (not as separate tasks)
       5. Ensure tasks are sequenced correctly with dependencies noted
-      6. Write all task files to `specs/{task_name}/tasks/`
+      6. Write all task files to `.agents/planning/{spec_name}/tasks/`
 
       ### Task Breakdown Guidelines
       - One plan step = one code task file (unless step is too large)
@@ -513,19 +517,19 @@ hats:
       You do NOT decide overall completion. You hand each finished task to the Critic.
 
       ### Storage Layout
-      Read code task files from `specs/{task_name}/tasks/`:
+      Read code task files from `.agents/planning/{spec_name}/tasks/`:
       - `task-01-*.code-task.md`, `task-02-*.code-task.md`, etc.
 
       Also reference:
-      - `specs/{task_name}/design.md` — Architecture and component details
-      - `specs/{task_name}/context.md` — Codebase patterns to follow
+      - `.agents/planning/{spec_name}/design.md` — Architecture and component details
+      - `.agents/planning/{spec_name}/context.md` — Codebase patterns to follow
 
-      Track progress in `specs/{task_name}/progress.md`:
+      Track progress in `.agents/planning/{spec_name}/progress.md`:
       - TDD cycle documentation (RED → GREEN → REFACTOR)
       - Build output summaries
       - Task completion status
 
-      Save build/test logs to `specs/{task_name}/logs/`:
+      Save build/test logs to `.agents/planning/{spec_name}/logs/`:
       - `build.log` — Latest build output
       - `test.log` — Latest test output
       Create the `logs/` directory if it doesn't exist.
@@ -595,7 +599,7 @@ hats:
       Refactor to align if any items fail. Code should not look "foreign" to the codebase.
 
       ### Broken Windows (Optional)
-      Check `specs/{task_name}/research/broken-windows.md` for low-risk fixes.
+      Check `.agents/planning/{spec_name}/research/broken-windows.md` for low-risk fixes.
       During refactor, you MAY fix broken windows in files you're already touching:
       - Only fix issues in files modified by this task
       - Only fix if truly low-risk (no behavior change)
@@ -685,7 +689,7 @@ hats:
 
       ### What To Read
       - the reviewed task id/path from the `review.passed` payload
-      - all `specs/{task_name}/tasks/*.code-task.md` files
+      - all `.agents/planning/{spec_name}/tasks/*.code-task.md` files
       - `design.md`, `plan.md`, and `progress.md` when needed to resolve ambiguity
 
       ### Decision Process
@@ -723,13 +727,13 @@ hats:
       Be thorough, be skeptical, verify everything yourself.
 
       ### Storage Layout
-      Read from `specs/{task_name}/`:
+      Read from `.agents/planning/{spec_name}/`:
       - `plan.md` — E2E test scenario to execute manually
       - `design.md` — Requirements to validate against
       - `progress.md` — Build progress and task completions
       - `tasks/*.code-task.md` — All task files (verify all have `status: completed`)
 
-      Write validation results to `specs/{task_name}/validation.md`:
+      Write validation results to `.agents/planning/{spec_name}/validation.md`:
       - Task completion verification (all tasks must be `status: completed`)
       - Test suite results
       - Build/lint verification
@@ -739,7 +743,7 @@ hats:
       ### Validation Checklist
 
       **0. All Code Tasks Complete**
-      Check every `*.code-task.md` file in `specs/{task_name}/tasks/`:
+      Check every `*.code-task.md` file in `.agents/planning/{spec_name}/tasks/`:
       - All must have `status: completed` in frontmatter
       - All must have valid `completed: YYYY-MM-DD` dates
       FAIL if any task is not marked completed.
@@ -842,7 +846,7 @@ hats:
       Follow conventional commit format and document the implementation.
 
       ### Storage Layout
-      Read from `specs/{task_name}/`:
+      Read from `.agents/planning/{spec_name}/`:
       - `design.md` — For commit message context
       - `validation.md` — Confirmation of passing validation
       - `tasks/*.code-task.md` — Update all to `status: completed`
@@ -882,8 +886,7 @@ hats:
       error messages for common format issues. Supports international
       domains and includes performance optimization for bulk validation.
 
-      Spec: specs/email-validator/design.md
-      🤖 Assisted by pdd-to-code-assist preset
+      Spec: .agents/planning/email-validator/design.md
       ```
 
       ### Constraints

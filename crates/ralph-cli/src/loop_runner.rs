@@ -1388,18 +1388,11 @@ pub async fn run_loop_impl(
 
         // Determine which hat to display in iteration separator
         // When Ralph is coordinating (hat_id == "ralph"), show the active hat being worked on
-        let display_hat = if hat_id.as_str() == "ralph" {
+        let preview_display_hat = if hat_id.as_str() == "ralph" {
             event_loop.get_active_hat_id()
         } else {
             hat_id.clone()
         };
-
-        // Get hat display name for RPC events
-        let hat_display = event_loop
-            .registry()
-            .get(&display_hat)
-            .map(|hat| hat.name.clone())
-            .unwrap_or_else(|| display_hat.as_str().to_string());
 
         let post_iteration_start_outcomes = dispatch_phase_event_hooks(
             &event_loop,
@@ -1413,8 +1406,8 @@ pub async fn run_loop_impl(
                 &ctx,
                 config.event_loop.max_iterations,
                 iteration,
-                Some(display_hat.as_str().to_string()),
-                Some(display_hat.as_str().to_string()),
+                Some(preview_display_hat.as_str().to_string()),
+                Some(preview_display_hat.as_str().to_string()),
                 None,
                 &accumulated_hook_metadata,
             ),
@@ -1483,7 +1476,43 @@ pub async fn run_loop_impl(
             return Ok(reason);
         }
 
-        // Update RPC shared hat state so get_state reflects the current iteration's hat
+        // Log hat changes with appropriate messaging
+        // Skip in TUI mode - TUI shows hat info in header, and stdout would corrupt display
+        // Skip in RPC mode - JSON events replace console output
+        if last_hat.as_ref() != Some(&hat_id) {
+            if tui_state.is_none() && !enable_rpc {
+                if hat_id.as_str() == "ralph" {
+                    info!("I'm Ralph. Let's do this.");
+                } else {
+                    info!("Putting on my {} hat.", hat_id);
+                }
+            }
+            last_hat = Some(hat_id.clone());
+        }
+        debug!(
+            "Iteration {}/{} - {} active",
+            iteration, config.event_loop.max_iterations, hat_id
+        );
+
+        // Build prompt for this hat
+        let prompt = match event_loop.build_prompt(&hat_id) {
+            Some(p) => p,
+            None => {
+                error!("Failed to build prompt for hat '{}'", hat_id);
+                continue;
+            }
+        };
+
+        let display_hat =
+            resolve_display_hat_for_execution(&event_loop, &hat_id, &preview_display_hat);
+
+        let hat_display = event_loop
+            .registry()
+            .get(&display_hat)
+            .map(|hat| hat.name.clone())
+            .unwrap_or_else(|| display_hat.as_str().to_string());
+
+        // Update RPC shared hat state so get_state reflects the current iteration's hat.
         if let Some(ref shared) = rpc_dispatcher_started
             && let Ok(mut guard) = shared.hat.lock()
         {
@@ -1494,7 +1523,8 @@ pub async fn run_loop_impl(
         // (cheap to create even when not in RPC mode)
         let iteration_started_at = std::time::Instant::now();
 
-        // Emit RPC iteration_start event
+        // Emit RPC iteration_start event after prompt construction so the displayed
+        // hat matches the one actually selected for execution.
         if let Some(ref tx) = rpc_event_tx {
             let started_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1525,33 +1555,6 @@ pub async fn run_loop_impl(
                 use_colors,
             );
         }
-
-        // Log hat changes with appropriate messaging
-        // Skip in TUI mode - TUI shows hat info in header, and stdout would corrupt display
-        // Skip in RPC mode - JSON events replace console output
-        if last_hat.as_ref() != Some(&hat_id) {
-            if tui_state.is_none() && !enable_rpc {
-                if hat_id.as_str() == "ralph" {
-                    info!("I'm Ralph. Let's do this.");
-                } else {
-                    info!("Putting on my {} hat.", hat_id);
-                }
-            }
-            last_hat = Some(hat_id.clone());
-        }
-        debug!(
-            "Iteration {}/{} - {} active",
-            iteration, config.event_loop.max_iterations, hat_id
-        );
-
-        // Build prompt for this hat
-        let prompt = match event_loop.build_prompt(&hat_id) {
-            Some(p) => p,
-            None => {
-                error!("Failed to build prompt for hat '{}'", hat_id);
-                continue;
-            }
-        };
 
         // In verbose mode, print the full prompt before execution
         if verbosity == Verbosity::Verbose {
@@ -1647,12 +1650,6 @@ pub async fn run_loop_impl(
         // For TUI mode, get the shared lines buffer for this iteration.
         // The buffer is owned by TuiState's IterationBuffer, so writes from
         // TuiStreamHandler appear immediately in the TUI (real-time streaming).
-        let hat_display = event_loop
-            .registry()
-            .get(&display_hat)
-            .map(|hat| hat.name.clone())
-            .unwrap_or_else(|| display_hat.as_str().to_string());
-
         let tui_lines: Option<Arc<std::sync::Mutex<Vec<ratatui::text::Line<'static>>>>> =
             if let Some(ref state) = tui_state {
                 // Start new iteration and get handle to the LATEST iteration's lines buffer.
@@ -2305,10 +2302,27 @@ pub async fn run_loop_impl(
             }
         }
 
-        let agent_wrote_events = processed_events
+        let mut agent_wrote_events = processed_events
             .as_ref()
             .map(|events| events.had_events)
             .unwrap_or(false);
+
+        if !agent_wrote_events && output_mentions_ralph_emit(&output) {
+            match recover_expected_emit_after_output(&mut event_loop)
+                .inspect_err(|e| warn!(error = %e, "Failed to recover expected emit events"))
+                .ok()
+            {
+                Some(LateEventRecovery::PendingWork | LateEventRecovery::Terminate(_)) => {
+                    agent_wrote_events = true;
+                }
+                Some(LateEventRecovery::NoLateEvents) | None => {
+                    warn!(
+                        hat = %hat_id.as_str(),
+                        "Output indicated `ralph emit`, but no event became readable before fallback logic"
+                    );
+                }
+            }
+        }
 
         // Inject default_publishes for active hats only when agent wrote no events
         if !agent_wrote_events {
@@ -2435,33 +2449,94 @@ enum LateEventRecovery {
     Terminate(TerminationReason),
 }
 
-fn recover_late_events_before_fallback(
+const LATE_EVENT_RECOVERY_MAX_POLLS: u32 = 5;
+const LATE_EVENT_RECOVERY_POLL_INTERVAL_MS: u64 = 50;
+const EMIT_RECOVERY_MAX_POLLS: u32 = 20;
+const EMIT_RECOVERY_POLL_INTERVAL_MS: u64 = 250;
+
+fn poll_for_late_events(
     event_loop: &mut EventLoop,
+    max_polls: u32,
+    poll_interval_ms: u64,
 ) -> std::io::Result<LateEventRecovery> {
-    let processed = event_loop.process_events_from_jsonl()?;
+    for poll_attempt in 0..=max_polls {
+        let processed = event_loop.process_events_from_jsonl()?;
 
-    if let Some(reason) = event_loop.check_cancellation_event() {
-        return Ok(LateEventRecovery::Terminate(reason));
-    }
+        if let Some(reason) = event_loop.check_cancellation_event() {
+            return Ok(LateEventRecovery::Terminate(reason));
+        }
 
-    if let Some(reason) = event_loop.check_completion_event() {
-        return Ok(LateEventRecovery::Terminate(reason));
-    }
+        if let Some(reason) = event_loop.check_completion_event() {
+            return Ok(LateEventRecovery::Terminate(reason));
+        }
 
-    if event_loop.has_pending_events() {
-        return Ok(LateEventRecovery::PendingWork);
-    }
+        if event_loop.has_pending_events() {
+            return Ok(LateEventRecovery::PendingWork);
+        }
 
-    if processed.had_events || processed.has_orphans || processed.human_interact_context.is_some() {
-        debug!(
-            had_events = processed.had_events,
-            has_orphans = processed.has_orphans,
-            had_human_interact = processed.human_interact_context.is_some(),
-            "Late JSONL drain found events but no new pending work"
-        );
+        let observed_events = processed.had_events
+            || processed.has_orphans
+            || processed.human_interact_context.is_some();
+
+        if observed_events {
+            debug!(
+                had_events = processed.had_events,
+                has_orphans = processed.has_orphans,
+                had_human_interact = processed.human_interact_context.is_some(),
+                "Late JSONL drain found events but no new pending work"
+            );
+            return Ok(LateEventRecovery::NoLateEvents);
+        }
+
+        if poll_attempt == max_polls {
+            break;
+        }
+
+        std::thread::sleep(Duration::from_millis(poll_interval_ms));
     }
 
     Ok(LateEventRecovery::NoLateEvents)
+}
+
+fn recover_late_events_before_fallback(
+    event_loop: &mut EventLoop,
+) -> std::io::Result<LateEventRecovery> {
+    poll_for_late_events(
+        event_loop,
+        LATE_EVENT_RECOVERY_MAX_POLLS,
+        LATE_EVENT_RECOVERY_POLL_INTERVAL_MS,
+    )
+}
+
+fn recover_expected_emit_after_output(
+    event_loop: &mut EventLoop,
+) -> std::io::Result<LateEventRecovery> {
+    poll_for_late_events(
+        event_loop,
+        EMIT_RECOVERY_MAX_POLLS,
+        EMIT_RECOVERY_POLL_INTERVAL_MS,
+    )
+}
+
+fn output_mentions_ralph_emit(output: &str) -> bool {
+    output.contains("ralph emit")
+}
+
+fn resolve_display_hat_for_execution(
+    event_loop: &EventLoop,
+    hat_id: &HatId,
+    preview_display_hat: &HatId,
+) -> HatId {
+    if hat_id.as_str() != "ralph" {
+        return hat_id.clone();
+    }
+
+    event_loop
+        .state()
+        .last_active_hat_ids
+        .first()
+        .cloned()
+        .unwrap_or_else(|| preview_display_hat.clone())
 }
 
 fn build_loop_start_payload_input(
@@ -8425,5 +8500,128 @@ hats:
             outcome,
             LateEventRecovery::Terminate(TerminationReason::CompletionPromise)
         );
+    }
+
+    #[test]
+    fn test_recover_late_events_before_fallback_polls_for_delayed_completion() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (mut event_loop, loop_ctx) = dispatch_test_event_loop_with_context(temp_dir.path());
+        let events_path = loop_ctx.events_path();
+        std::fs::create_dir_all(events_path.parent().expect("events path parent"))
+            .expect("create events directory");
+
+        let delayed_events_path = events_path.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            let mut events_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&delayed_events_path)
+                .expect("open delayed events file");
+            writeln!(
+                events_file,
+                r#"{{"topic":"LOOP_COMPLETE","payload":"done","ts":"2026-03-08T00:00:00Z"}}"#
+            )
+            .expect("write delayed completion event");
+            events_file.flush().expect("flush delayed completion event");
+        });
+
+        let outcome =
+            recover_late_events_before_fallback(&mut event_loop).expect("recover completion");
+        writer.join().expect("join delayed event writer");
+
+        assert_eq!(
+            outcome,
+            LateEventRecovery::Terminate(TerminationReason::CompletionPromise)
+        );
+    }
+
+    #[test]
+    fn test_recover_expected_emit_after_output_polls_for_delayed_completion() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let (mut event_loop, loop_ctx) = dispatch_test_event_loop_with_context(temp_dir.path());
+        let events_path = loop_ctx.events_path();
+        std::fs::create_dir_all(events_path.parent().expect("events path parent"))
+            .expect("create events directory");
+
+        let delayed_events_path = events_path.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            let mut events_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&delayed_events_path)
+                .expect("open delayed events file");
+            writeln!(
+                events_file,
+                r#"{{"topic":"LOOP_COMPLETE","payload":"done","ts":"2026-03-08T00:00:00Z"}}"#
+            )
+            .expect("write delayed completion event");
+            events_file.flush().expect("flush delayed completion event");
+        });
+
+        let outcome =
+            recover_expected_emit_after_output(&mut event_loop).expect("recover expected emit");
+        writer.join().expect("join delayed event writer");
+
+        assert_eq!(
+            outcome,
+            LateEventRecovery::Terminate(TerminationReason::CompletionPromise)
+        );
+    }
+
+    #[test]
+    fn test_resolve_display_hat_for_execution_prefers_prompt_selected_hat_for_ralph() {
+        let yaml = r#"
+hats:
+  investigator:
+    name: "Investigator"
+    triggers: ["debug.start", "hypothesis.confirmed"]
+  tester:
+    name: "Tester"
+    triggers: ["hypothesis.test"]
+"#;
+        let config: RalphConfig = serde_yaml::from_str(yaml).expect("yaml config");
+        let mut event_loop = EventLoop::new(config);
+
+        event_loop
+            .bus()
+            .publish(Event::new("hypothesis.test", "Test the hypothesis"));
+        event_loop
+            .build_prompt(&HatId::new("ralph"))
+            .expect("prompt should build");
+
+        let display_hat = resolve_display_hat_for_execution(
+            &event_loop,
+            &HatId::new("ralph"),
+            &HatId::new("investigator"),
+        );
+
+        assert_eq!(display_hat.as_str(), "tester");
+    }
+
+    #[test]
+    fn test_resolve_display_hat_for_execution_keeps_explicit_non_ralph_hat() {
+        let event_loop = EventLoop::new(RalphConfig::default());
+
+        let display_hat = resolve_display_hat_for_execution(
+            &event_loop,
+            &HatId::new("fixer"),
+            &HatId::new("investigator"),
+        );
+
+        assert_eq!(display_hat.as_str(), "fixer");
+    }
+
+    #[test]
+    fn test_output_mentions_ralph_emit_detects_tool_call_output() {
+        assert!(output_mentions_ralph_emit(
+            r#"[Tool] Bash: ralph emit "hypothesis.test" "payload""#
+        ));
+        assert!(!output_mentions_ralph_emit("[Tool] Bash: cargo test"));
     }
 }

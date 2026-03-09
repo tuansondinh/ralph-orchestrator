@@ -1826,61 +1826,123 @@ hats:
 }
 
 #[test]
-fn test_get_active_hat_id_prefers_progressed_hat_over_stale_start_event() {
-    // Repro for issue #225:
-    // after the initial build.start has already been consumed, a stray build.start
-    // can remain pending alongside the correct downstream event. The next visible
-    // hat should be the progressed hat (unit_test_writer), not the stale starter.
+fn test_get_active_hat_id_matches_prompt_active_hat_selection() {
     let yaml = r#"
-event_loop:
-  starting_event: "build.start"
 hats:
-  unit_test_researcher:
-    name: "🔬 Unit Test Researcher"
-    triggers: ["build.start"]
-    publishes: ["unit_test_research.complete"]
-  unit_test_writer:
-    name: "🧪 Unit Test Writer"
-    triggers: ["unit_test_research.complete"]
-    publishes: ["unit_tests.written"]
+  investigator:
+    name: "Investigator"
+    triggers: ["debug.start", "hypothesis.confirmed"]
+  tester:
+    name: "Tester"
+    triggers: ["hypothesis.test"]
 "#;
     let config: RalphConfig = serde_yaml::from_str(yaml).unwrap();
     let mut event_loop = EventLoop::new(config);
 
-    event_loop.initialize("Spec: specs/example/spec.md");
-
-    // Iteration 1 starts on the researcher via the initial build.start.
-    assert_eq!(
-        event_loop.get_active_hat_id().as_str(),
-        "unit_test_researcher",
-        "Initial build.start should activate the researcher"
-    );
-
-    // Ralph then consumes that initial build.start during prompt construction.
-    let _prompt = event_loop.build_prompt(&HatId::new("ralph")).unwrap();
-    assert!(
-        event_loop
-            .bus
-            .peek_pending(&HatId::new("unit_test_researcher"))
-            .is_none_or(|events| events.is_empty()),
-        "Initial build.start should be consumed before the next iteration"
-    );
-
-    // Reproduce the issue comment's state: a stray build.start is present alongside
-    // the correct downstream completion event for the next hat.
     event_loop
         .bus
-        .publish(Event::new("build.start", "Spec: specs/example/spec.md"));
-    event_loop.bus.publish(Event::new(
-        "unit_test_research.complete",
-        "Research document written",
-    ));
+        .publish(Event::new("debug.start", "Investigate a bug"));
+    event_loop
+        .bus
+        .publish(Event::new("hypothesis.test", "Test the hypothesis"));
+
+    let preview_active_hat = event_loop.get_active_hat_id();
+
+    event_loop
+        .build_prompt(&HatId::new("ralph"))
+        .expect("prompt should build");
+
+    let built_active_hat = event_loop
+        .state
+        .last_active_hat_ids
+        .first()
+        .expect("build_prompt should set active hats")
+        .clone();
+
+    assert_eq!(
+        preview_active_hat.as_str(),
+        "tester",
+        "downstream hypothesis.test should outrank kickoff debug.start in preview selection"
+    );
+    assert_eq!(
+        built_active_hat.as_str(),
+        "tester",
+        "build_prompt should select tester when debug.start and hypothesis.test are both pending"
+    );
+    assert_eq!(
+        preview_active_hat, built_active_hat,
+        "display hat preview should match prompt-selected active hat"
+    );
+}
+
+#[test]
+fn test_get_active_hat_id_prefers_semantic_event_over_targeted_task_resume() {
+    let yaml = r#"
+hats:
+  investigator:
+    name: "Investigator"
+    triggers: ["task.resume", "debug.start", "hypothesis.confirmed"]
+  tester:
+    name: "Tester"
+    triggers: ["hypothesis.test"]
+"#;
+    let config: RalphConfig = serde_yaml::from_str(yaml).unwrap();
+    let mut event_loop = EventLoop::new(config);
+
+    event_loop
+        .bus
+        .publish(Event::new("task.resume", "Recovery").with_target("investigator"));
+    event_loop
+        .bus
+        .publish(Event::new("hypothesis.test", "Test the hypothesis"));
+
+    let preview_active_hat = event_loop.get_active_hat_id();
+    assert_eq!(
+        preview_active_hat.as_str(),
+        "tester",
+        "semantic downstream work should outrank fallback task.resume for display selection"
+    );
+
+    event_loop
+        .build_prompt(&HatId::new("ralph"))
+        .expect("prompt should build");
+
+    let built_active_hat = event_loop
+        .state
+        .last_active_hat_ids
+        .first()
+        .expect("build_prompt should set active hats")
+        .clone();
+    assert_eq!(
+        built_active_hat.as_str(),
+        "tester",
+        "prompt-selected active hat should ignore fallback task.resume when real work is pending"
+    );
+}
+
+#[test]
+fn test_get_active_hat_id_honors_direct_target_before_topic_lookup() {
+    let yaml = r#"
+hats:
+  alpha_hat:
+    name: "Alpha"
+    triggers: ["task.resume"]
+  zebra_hat:
+    name: "Zebra"
+    triggers: ["task.resume"]
+"#;
+    let config: RalphConfig = serde_yaml::from_str(yaml).unwrap();
+    let mut event_loop = EventLoop::new(config);
+
+    event_loop
+        .bus
+        .publish(Event::new("task.resume", "Recovery").with_target("zebra_hat"));
 
     let active_hat_id = event_loop.get_active_hat_id();
     assert_eq!(
         active_hat_id.as_str(),
-        "unit_test_writer",
-        "Display should advance to unit_test_writer once unit_test_research.complete is pending, even if a stale build.start is also present"
+        "zebra_hat",
+        "direct event targets should override generic topic subscriber ordering"
     );
 }
 

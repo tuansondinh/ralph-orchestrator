@@ -1375,15 +1375,52 @@ impl EventLoop {
 
     fn determine_active_hat_ids(&self, events: &[Event]) -> Vec<HatId> {
         let mut active_hat_ids = Vec::new();
-        for event in events {
-            if let Some(hat) = self.registry.get_for_topic(event.topic.as_str()) {
-                // Avoid duplicates
-                if !active_hat_ids.iter().any(|id| id == &hat.id) {
-                    active_hat_ids.push(hat.id.clone());
-                }
+        for event in self.effective_regular_events(events) {
+            if let Some(active_hat_id) = self.resolve_active_hat_id_for_event(event)
+                && !active_hat_ids.iter().any(|id| id == &active_hat_id)
+            {
+                active_hat_ids.push(active_hat_id);
             }
         }
         active_hat_ids
+    }
+
+    fn effective_regular_events<'a>(&self, events: &'a [Event]) -> Vec<&'a Event> {
+        let has_downstream_event = events
+            .iter()
+            .any(|event| !Self::is_kickoff_or_recovery_event(event.topic.as_str()));
+        events
+            .iter()
+            .filter(|event| {
+                !has_downstream_event || !Self::is_kickoff_or_recovery_event(event.topic.as_str())
+            })
+            .collect()
+    }
+
+    fn resolve_active_hat_id_for_event(&self, event: &Event) -> Option<HatId> {
+        if let Some(target) = &event.target
+            && self.registry.get(target).is_some()
+        {
+            return Some(target.clone());
+        }
+
+        self.registry
+            .get_for_topic(event.topic.as_str())
+            .map(|hat| hat.id.clone())
+    }
+
+    fn is_kickoff_or_recovery_event(topic: &str) -> bool {
+        topic == "task.start" || topic == "task.resume" || topic.strip_suffix(".start").is_some()
+    }
+
+    fn peek_pending_regular_events(&self) -> Vec<Event> {
+        let mut events = Vec::new();
+        for hat_id in self.bus.hat_ids() {
+            if let Some(pending) = self.bus.peek_pending(hat_id) {
+                events.extend(pending.iter().cloned());
+            }
+        }
+        events
     }
 
     /// Formats an event for prompt context.
@@ -1466,32 +1503,15 @@ impl EventLoop {
     /// Returns the first active hat, or "ralph" if no specific hat is active.
     /// BTreeMap iteration is already sorted by key.
     pub fn get_active_hat_id(&self) -> HatId {
-        let mut entrypoint_hat = None;
-
-        // Peek at pending events (don't consume them)
-        for hat_id in self.bus.hat_ids() {
-            let Some(events) = self.bus.peek_pending(hat_id) else {
-                continue;
-            };
-            let Some(event) = events.first() else {
-                continue;
-            };
-            if let Some(active_hat) = self.registry.get_for_topic(event.topic.as_str()) {
-                if self.is_entrypoint_topic(event.topic.as_str()) {
-                    entrypoint_hat.get_or_insert_with(|| active_hat.id.clone());
-                    continue;
-                }
-                return active_hat.id.clone();
-            }
+        let pending_events = self.peek_pending_regular_events();
+        if let Some(active_hat_id) = self
+            .determine_active_hat_ids(&pending_events)
+            .into_iter()
+            .next()
+        {
+            return active_hat_id;
         }
-
-        entrypoint_hat.unwrap_or_else(|| HatId::new("ralph"))
-    }
-
-    fn is_entrypoint_topic(&self, topic: &str) -> bool {
-        topic == "task.start"
-            || topic == "task.resume"
-            || self.config.event_loop.starting_event.as_deref() == Some(topic)
+        HatId::new("ralph")
     }
 
     /// Injects a default event for a hat when the agent wrote no events.

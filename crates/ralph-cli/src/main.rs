@@ -2731,6 +2731,7 @@ mod tests {
     use ralph_core::{HookMutationConfig, HookOnError, HookPhaseEvent, HookSpec};
     use std::path::PathBuf;
     use tempfile::TempDir;
+<<<<<<< HEAD
 
     #[test]
     fn test_required_restart_command_matches_contract() {
@@ -2756,6 +2757,8 @@ mod tests {
             "restart sentinel should be removed before restart command dispatch"
         );
     }
+=======
+>>>>>>> origin/main
 
     #[test]
     fn test_verbosity_cli_quiet() {

@@ -61,10 +61,10 @@ The easiest way to install Ralph:
 
 ```bash
 # Install globally
-npm install -g @ralph-orchestrator/ralph-cli
+npm install -g @tuansondinh/ralph-cli
 
 # Or run directly with npx
-npx @ralph-orchestrator/ralph-cli --version
+npx @tuansondinh/ralph-cli --version
 ```
 
 ### Via Homebrew (macOS)
@@ -161,7 +161,7 @@ If you get permission errors:
 
 ```bash
 # For npm
-sudo npm install -g @ralph-orchestrator/ralph-cli
+sudo npm install -g @tuansondinh/ralph-cli
 
 # For symlinks
 sudo ln -s $(pwd)/target/release/ralph /usr/local/bin/ralph

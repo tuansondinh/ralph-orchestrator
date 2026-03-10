@@ -20,8 +20,8 @@ exclude = [
 edition = "2024"
 version = "2.8.0"
 license = "MIT"
-repository = "https://github.com/mikeyobrien/ralph-orchestrator"
-homepage = "https://github.com/mikeyobrien/ralph-orchestrator"
+repository = "https://github.com/tuansondinh/ralph-orchestrator"
+homepage = "https://github.com/tuansondinh/ralph-orchestrator"
 description = "Ralph Orchestrator - Multi-agent orchestration framework"
 
 [workspace.lints.rust]
@@ -161,8 +161,8 @@ ci = "github"
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
 # The installers to generate for each app
 installers = ["shell", "npm"]
-# npm package scope (creates @ralph-orchestrator/ralph)
-npm-scope = "@ralph-orchestrator"
+# npm package scope for this fork (creates @tuansondinh/ralph-cli)
+npm-scope = "@tuansondinh"
 # Publish jobs to run in CI
 publish-jobs = ["npm"]
 # Extra static files to include in each App (path relative to this Cargo.toml's dir)

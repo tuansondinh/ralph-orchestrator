@@ -27,7 +27,7 @@ Before you begin, ensure you have:
 === "npm (Recommended)"
 
     ```bash
-    npm install -g @ralph-orchestrator/ralph-cli
+    npm install -g @tuansondinh/ralph-cli
     ```
 
 === "Homebrew (macOS)"

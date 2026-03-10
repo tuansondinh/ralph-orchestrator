@@ -39,7 +39,7 @@ which ralph  # Should return nothing
 
 ```bash
 # Via npm (recommended)
-npm install -g @ralph-orchestrator/ralph-cli
+npm install -g @tuansondinh/ralph-cli
 
 # Via Homebrew
 brew install ralph-orchestrator
@@ -197,7 +197,7 @@ pip uninstall ralph-orchestrator
 ### 2. Install v2
 
 ```bash
-npm install -g @ralph-orchestrator/ralph-cli
+npm install -g @tuansondinh/ralph-cli
 ```
 
 ### 3. Convert Configuration

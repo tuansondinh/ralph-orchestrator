@@ -9,7 +9,7 @@ If you haven't installed Ralph yet, follow the full [Installation](installation.
 Quick install (npm):
 
 ```bash
-npm install -g @tuansondinh/ralph-cli
+npm install -g @tuansondinh/ralph-orchestrator-lucent
 ```
 
 ## 2. Install a Backend CLI (Claude Recommended)

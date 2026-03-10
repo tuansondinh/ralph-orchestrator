@@ -14,7 +14,7 @@ Comprehensive installation instructions for Ralph Orchestrator.
 ### Method 1: npm (Recommended)
 
 ```bash
-npm install -g @tuansondinh/ralph-cli
+npm install -g @tuansondinh/ralph-orchestrator-lucent
 ```
 
 ### Method 2: Homebrew (macOS/Linux)
@@ -26,7 +26,7 @@ brew install ralph-orchestrator
 ### Method 3: Cargo
 
 ```bash
-cargo install ralph-cli
+cargo install ralph-orchestrator-lucent
 ```
 
 ### Method 4: Prebuilt Binary (cargo-dist)

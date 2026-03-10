@@ -746,11 +746,11 @@ fn runtime_test_cases_for_ac(ac_id: &str) -> Vec<RuntimeTestCase> {
             },
         ],
         "AC-02" => vec![RuntimeTestCase {
-            package: "ralph-cli",
+            package: "ralph-orchestrator-lucent",
             filter: "test_dispatch_phase_event_hooks_routes_by_phase_and_preserves_order",
         }],
         "AC-03" => vec![RuntimeTestCase {
-            package: "ralph-cli",
+            package: "ralph-orchestrator-lucent",
             filter: "test_dispatch_phase_event_hooks_routes_by_phase_and_preserves_order",
         }],
         "AC-04" => vec![
@@ -759,7 +759,7 @@ fn runtime_test_cases_for_ac(ac_id: &str) -> Vec<RuntimeTestCase> {
                 filter: "resolve_phase_event_preserves_declaration_order",
             },
             RuntimeTestCase {
-                package: "ralph-cli",
+                package: "ralph-orchestrator-lucent",
                 filter: "test_dispatch_phase_event_hooks_routes_by_phase_and_preserves_order",
             },
         ],
@@ -776,56 +776,56 @@ fn runtime_test_cases_for_ac(ac_id: &str) -> Vec<RuntimeTestCase> {
             filter: "run_truncates_stdout_and_stderr_at_max_output_bytes",
         }],
         "AC-08" => vec![RuntimeTestCase {
-            package: "ralph-cli",
+            package: "ralph-orchestrator-lucent",
             filter: "test_loop_start_dispatch_warn_continues_and_block_aborts",
         }],
         "AC-09" => vec![RuntimeTestCase {
-            package: "ralph-cli",
+            package: "ralph-orchestrator-lucent",
             filter: "test_loop_start_dispatch_warn_continues_and_block_aborts",
         }],
         "AC-10" => vec![RuntimeTestCase {
-            package: "ralph-cli",
+            package: "ralph-orchestrator-lucent",
             filter: "test_iteration_start_suspend_waits_for_resume_and_clears_artifacts_before_continuing",
         }],
         "AC-11" => vec![RuntimeTestCase {
-            package: "ralph-cli",
+            package: "ralph-orchestrator-lucent",
             filter: "test_wait_for_resume_if_suspended_resumes_and_clears_suspend_artifacts",
         }],
         "AC-12" => vec![RuntimeTestCase {
-            package: "ralph-cli",
+            package: "ralph-orchestrator-lucent",
             filter: "test_wait_for_resume_if_suspended_is_noop_without_suspend_dispositions",
         }],
         "AC-13" => vec![RuntimeTestCase {
-            package: "ralph-cli",
+            package: "ralph-orchestrator-lucent",
             filter: "test_ac13_mutation_disabled_json_output_is_inert_for_accumulator_and_downstream_payloads",
         }],
         "AC-14" => vec![
             RuntimeTestCase {
-                package: "ralph-cli",
+                package: "ralph-orchestrator-lucent",
                 filter: "test_ac14_mutation_enabled_updates_only_namespaced_metadata_in_downstream_payloads",
             },
             RuntimeTestCase {
-                package: "ralph-cli",
+                package: "ralph-orchestrator-lucent",
                 filter: "test_parse_hook_mutation_stdout_accepts_metadata_only_payload_and_namespaces_by_hook",
             },
         ],
         "AC-15" => vec![
             RuntimeTestCase {
-                package: "ralph-cli",
+                package: "ralph-orchestrator-lucent",
                 filter: "test_ac15_dispatch_phase_event_hooks_non_json_mutation_warn_continues_through_block_gate",
             },
             RuntimeTestCase {
-                package: "ralph-cli",
+                package: "ralph-orchestrator-lucent",
                 filter: "test_ac15_dispatch_phase_event_hooks_non_json_mutation_block_surfaces_invalid_output_reason",
             },
             RuntimeTestCase {
-                package: "ralph-cli",
+                package: "ralph-orchestrator-lucent",
                 filter: "test_ac15_dispatch_phase_event_hooks_non_json_mutation_suspend_uses_wait_for_resume_gate",
             },
         ],
         "AC-16" => vec![
             RuntimeTestCase {
-                package: "ralph-cli",
+                package: "ralph-orchestrator-lucent",
                 filter: "test_dispatch_phase_event_hooks_retry_backoff_recovers_before_exhaustion",
             },
             RuntimeTestCase {
@@ -834,12 +834,12 @@ fn runtime_test_cases_for_ac(ac_id: &str) -> Vec<RuntimeTestCase> {
             },
         ],
         "AC-17" => vec![RuntimeTestCase {
-            package: "ralph-cli",
+            package: "ralph-orchestrator-lucent",
             filter: "test_hooks_validate_json_success_report_and_exit_code",
         }],
         "AC-18" => vec![
             RuntimeTestCase {
-                package: "ralph-cli",
+                package: "ralph-orchestrator-lucent",
                 filter: "test_preflight_check_config_json",
             },
             RuntimeTestCase {

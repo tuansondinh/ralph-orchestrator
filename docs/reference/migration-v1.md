@@ -39,13 +39,13 @@ which ralph  # Should return nothing
 
 ```bash
 # Via npm (recommended)
-npm install -g @tuansondinh/ralph-cli
+npm install -g @tuansondinh/ralph-orchestrator-lucent
 
 # Via Homebrew
 brew install ralph-orchestrator
 
 # Via Cargo
-cargo install ralph-cli
+cargo install ralph-orchestrator-lucent
 ```
 
 ## Configuration Changes
@@ -197,7 +197,7 @@ pip uninstall ralph-orchestrator
 ### 2. Install v2
 
 ```bash
-npm install -g @tuansondinh/ralph-cli
+npm install -g @tuansondinh/ralph-orchestrator-lucent
 ```
 
 ### 3. Convert Configuration

@@ -2796,39 +2796,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ralph-cli"
-version = "2.8.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "clap_complete",
- "crossterm 0.28.1",
- "indicatif",
- "keyring",
- "nix 0.29.0",
- "open",
- "ralph-adapters",
- "ralph-api",
- "ralph-core",
- "ralph-proto",
- "ralph-telegram",
- "ralph-tui",
- "ratatui",
- "regex",
- "reqwest 0.12.28",
- "scopeguard",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.17",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "ralph-core"
 version = "2.8.0"
 dependencies = [
@@ -2870,6 +2837,39 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
+]
+
+[[package]]
+name = "ralph-orchestrator-lucent"
+version = "2.8.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "crossterm 0.28.1",
+ "indicatif",
+ "keyring",
+ "nix 0.29.0",
+ "open",
+ "ralph-adapters",
+ "ralph-api",
+ "ralph-core",
+ "ralph-proto",
+ "ralph-telegram",
+ "ralph-tui",
+ "ratatui",
+ "regex",
+ "reqwest 0.12.28",
+ "scopeguard",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

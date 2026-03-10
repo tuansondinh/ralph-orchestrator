@@ -1,5 +1,5 @@
 [package]
-name = "ralph-cli"
+name = "ralph-orchestrator-lucent"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

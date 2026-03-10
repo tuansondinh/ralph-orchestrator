@@ -61,10 +61,10 @@ The easiest way to install Ralph:
 
 ```bash
 # Install globally
-npm install -g @tuansondinh/ralph-cli
+npm install -g @tuansondinh/ralph-orchestrator-lucent
 
 # Or run directly with npx
-npx @tuansondinh/ralph-cli --version
+npx @tuansondinh/ralph-orchestrator-lucent --version
 ```
 
 ### Via Homebrew (macOS)
@@ -78,7 +78,7 @@ brew install ralph-orchestrator
 If you have Rust installed:
 
 ```bash
-cargo install ralph-cli
+cargo install ralph-orchestrator-lucent
 ```
 
 ### From Source
@@ -161,7 +161,7 @@ If you get permission errors:
 
 ```bash
 # For npm
-sudo npm install -g @tuansondinh/ralph-cli
+sudo npm install -g @tuansondinh/ralph-orchestrator-lucent
 
 # For symlinks
 sudo ln -s $(pwd)/target/release/ralph /usr/local/bin/ralph

@@ -27,7 +27,7 @@ Before you begin, ensure you have:
 === "npm (Recommended)"
 
     ```bash
-    npm install -g @tuansondinh/ralph-cli
+    npm install -g @tuansondinh/ralph-orchestrator-lucent
     ```
 
 === "Homebrew (macOS)"
@@ -39,7 +39,7 @@ Before you begin, ensure you have:
 === "Cargo"
 
     ```bash
-    cargo install ralph-cli
+    cargo install ralph-orchestrator-lucent
     ```
 
 ## Verify Installation

@@ -19,7 +19,7 @@ A hat-based orchestration framework that keeps AI agents in a loop until the tas
 ### Via npm (Recommended)
 
 ```bash
-npm install -g @tuansondinh/ralph-cli
+npm install -g @tuansondinh/ralph-orchestrator-lucent
 ```
 
 ### Via Homebrew (macOS/Linux)
@@ -31,7 +31,7 @@ brew install ralph-orchestrator
 ### Via Cargo
 
 ```bash
-cargo install ralph-cli
+cargo install ralph-orchestrator-lucent
 ```
 
 ## Quick Start

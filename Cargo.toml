@@ -143,7 +143,7 @@ ralph-proto = { version = "2.8.0", path = "crates/ralph-proto" }
 ralph-core = { version = "2.8.0", path = "crates/ralph-core", features = ["recording"] }
 ralph-adapters = { version = "2.8.0", path = "crates/ralph-adapters" }
 ralph-tui = { version = "2.8.0", path = "crates/ralph-tui" }
-ralph-cli = { version = "2.8.0", path = "crates/ralph-cli" }
+ralph-orchestrator-lucent = { version = "2.8.0", path = "crates/ralph-cli" }
 ralph-bench = { version = "2.8.0", path = "crates/ralph-bench" }
 ralph-e2e = { version = "2.8.0", path = "crates/ralph-e2e" }
 ralph-telegram = { version = "2.8.0", path = "crates/ralph-telegram" }
@@ -161,7 +161,7 @@ ci = "github"
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
 # The installers to generate for each app
 installers = ["shell", "npm"]
-# npm package scope for this fork (creates @tuansondinh/ralph-cli)
+# npm package scope for this fork (creates @tuansondinh/ralph-orchestrator-lucent)
 npm-scope = "@tuansondinh"
 # Publish jobs to run in CI
 publish-jobs = ["npm"]

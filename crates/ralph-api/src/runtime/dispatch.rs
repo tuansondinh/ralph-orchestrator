@@ -8,7 +8,8 @@ use crate::collection_domain::{
 use crate::config_domain::ConfigUpdateParams;
 use crate::errors::ApiError;
 use crate::loop_domain::{
-    LoopListParams, LoopRetryParams, LoopStopMergeParams, LoopTriggerMergeTaskParams,
+    LoopListParams, LoopRetryParams, LoopStartParams, LoopStopMergeParams,
+    LoopTriggerMergeTaskParams,
 };
 use crate::planning_domain::{
     PlanningGetArtifactParams, PlanningRespondParams, PlanningStartParams,
@@ -143,6 +144,11 @@ impl RpcRuntime {
 
     fn dispatch_loop(&self, request: &RpcRequestEnvelope) -> Result<Value, ApiError> {
         match request.method.as_str() {
+            "loop.start" => {
+                let params: LoopStartParams = self.parse_params(request)?;
+                let loop_record = self.loop_domain_mut()?.start(params, self.stream_domain())?;
+                Ok(json!({ "loop": loop_record }))
+            }
             "loop.list" => {
                 let params: LoopListParams = self.parse_params(request)?;
                 let loops = self.loop_domain_mut()?.list(params)?;

@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::{fs, path::PathBuf};
 
 use anyhow::Result;
 use futures::StreamExt;
@@ -136,6 +137,69 @@ async fn open_stream(server: &TestServer, subscription_id: &str) -> Result<WsStr
     open_stream_with_token(server, subscription_id, None).await
 }
 
+#[cfg(unix)]
+fn create_fake_loop_ralph_command() -> Result<(TempDir, PathBuf, PathBuf)> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fake_bin = tempfile::tempdir()?;
+    let command_path = fake_bin.path().join("fake-ralph");
+    let call_log_path = fake_bin.path().join("calls.log");
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "{call_log_path}"
+is_run=0
+for arg in "$@"; do
+  if [ "$arg" = "run" ]; then
+    is_run=1
+  fi
+done
+if [ "$is_run" = "1" ]; then
+  prompt="[no prompt]"
+  previous=""
+  for arg in "$@"; do
+    if [ "$previous" = "-p" ]; then
+      prompt="$arg"
+      previous=""
+      continue
+    fi
+    if [ "$previous" = "-P" ]; then
+      prompt="$(cat "$arg" 2>/dev/null || printf '[prompt file]')"
+      previous=""
+      continue
+    fi
+    case "$arg" in
+      -p|-P) previous="$arg" ;;
+    esac
+  done
+
+  mkdir -p ".ralph"
+  cat > ".ralph/loop.lock" <<EOF
+{{
+  "pid": $$,
+  "started": "2026-03-14T09:00:00Z",
+  "prompt": "$prompt"
+}}
+EOF
+  printf '%s\n' '{{"topic":"loop.started","payload":"fake loop started","ts":"2026-03-14T09:00:01Z"}}' >> ".ralph/events.jsonl"
+  while [ ! -f ".ralph/stop-requested" ]; do
+    sleep 0.1
+  done
+  printf '%s\n' '{{"topic":"loop.stopped","payload":"fake loop stopped","ts":"2026-03-14T09:00:02Z"}}' >> ".ralph/events.jsonl"
+  exit 0
+fi
+exit 0
+"#,
+        call_log_path = call_log_path.display()
+    );
+
+    fs::write(&command_path, script)?;
+    let mut permissions = fs::metadata(&command_path)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&command_path, permissions)?;
+
+    Ok((fake_bin, command_path, call_log_path))
+}
+
 async fn recv_topic_event(stream: &mut WsStream, topic: &str) -> Value {
     loop {
         let maybe_message = timeout(Duration::from_secs(4), stream.next())
@@ -181,6 +245,120 @@ async fn recv_mixed_events(stream: &mut WsStream, required: usize) -> Vec<Value>
     }
 
     events
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn loop_start_publishes_runtime_events_and_resume_replays_history() -> Result<()> {
+    let (fake_bin, fake_ralph, call_log_path) = create_fake_loop_ralph_command()?;
+
+    let mut config = ApiConfig::default();
+    config.ralph_command = fake_ralph.to_string_lossy().to_string();
+
+    let server = TestServer::start(config).await;
+    let client = Client::new();
+
+    let subscribe = rpc_request(
+        "req-loop-stream-live-1",
+        "stream.subscribe",
+        json!({
+            "topics": ["loop.status.changed", "loop.event", "loop.log.line"],
+            "filters": { "resourceIds": ["(primary)"] }
+        }),
+        None,
+    );
+    let (_, subscribe_payload) = post_rpc(&client, &server, &subscribe).await?;
+    let subscription_id = subscribe_payload["result"]["subscriptionId"]
+        .as_str()
+        .expect("subscription id should be present")
+        .to_string();
+
+    let mut live_stream = open_stream(&server, &subscription_id).await?;
+
+    let start = rpc_request(
+        "req-loop-start-live-1",
+        "loop.start",
+        json!({
+            "config": "presets/spec-driven.yml",
+            "prompt": "Ship phase-1 loop start",
+            "backend": "codex",
+            "exclusive": true
+        }),
+        Some("idem-loop-start-live-1"),
+    );
+    let (status, start_payload) = post_rpc(&client, &server, &start).await?;
+    assert_eq!(status, 200, "loop.start must succeed: {start_payload}");
+    assert_eq!(start_payload["result"]["loop"]["id"], "(primary)");
+    assert_eq!(start_payload["result"]["loop"]["status"], "running");
+
+    let calls = fs::read_to_string(&call_log_path)?;
+    assert!(
+        calls
+            .lines()
+            .any(|line| line.contains("-c presets/spec-driven.yml run --no-tui -p Ship phase-1 loop start -b codex --exclusive")),
+        "expected loop.start invocation, got: {calls}"
+    );
+
+    let running_event = recv_topic_event(&mut live_stream, "loop.status.changed").await;
+    assert_eq!(running_event["payload"]["from"], "none");
+    assert_eq!(running_event["payload"]["to"], "running");
+    let resume_cursor = running_event["cursor"]
+        .as_str()
+        .expect("cursor should be present")
+        .to_string();
+
+    let loop_event = recv_topic_event(&mut live_stream, "loop.event").await;
+    assert_eq!(loop_event["payload"]["event"], "loop.started");
+    assert_eq!(loop_event["payload"]["message"], "fake loop started");
+
+    let log_event = recv_topic_event(&mut live_stream, "loop.log.line").await;
+    assert_eq!(log_event["payload"]["line"], "fake loop started");
+    assert_eq!(log_event["payload"]["source"], "event");
+
+    live_stream.close(None).await?;
+
+    let stop = rpc_request(
+        "req-loop-stop-live-1",
+        "loop.stop",
+        json!({ "id": "(primary)", "force": false }),
+        Some("idem-loop-stop-live-1"),
+    );
+    let (status, stop_payload) = post_rpc(&client, &server, &stop).await?;
+    assert_eq!(status, 200, "loop.stop must succeed: {stop_payload}");
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resume = rpc_request(
+        "req-loop-stream-resume-1",
+        "stream.subscribe",
+        json!({
+            "topics": ["loop.status.changed", "loop.event", "loop.log.line"],
+            "cursor": resume_cursor,
+            "filters": { "resourceIds": ["(primary)"] }
+        }),
+        None,
+    );
+    let (_, resume_payload) = post_rpc(&client, &server, &resume).await?;
+    let resume_subscription_id = resume_payload["result"]["subscriptionId"]
+        .as_str()
+        .expect("resume subscription id should be present")
+        .to_string();
+
+    let mut replay_stream = open_stream(&server, &resume_subscription_id).await?;
+    let replay_events = recv_mixed_events(&mut replay_stream, 5).await;
+
+    assert!(replay_events.iter().any(|event| {
+        event["topic"] == "loop.event"
+            && event["payload"]["event"] == "loop.stopped"
+    }));
+    assert!(replay_events.iter().any(|event| {
+        event["topic"] == "loop.status.changed" && event["replay"]["mode"] == "resume"
+    }));
+
+    replay_stream.close(None).await?;
+    drop(fake_bin);
+    server.stop().await;
+    Ok(())
 }
 
 #[tokio::test]

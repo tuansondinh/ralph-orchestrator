@@ -1,26 +1,39 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use ralph_core::{
-    LoopLock, LoopRegistry, MergeButtonState, MergeQueue, MergeState, RegistryError,
-    merge_button_state, remove_worktree,
+    EventReader, LoopLock, LoopRegistry, MergeButtonState, MergeQueue, MergeState,
+    RegistryError, merge_button_state, remove_worktree,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::errors::ApiError;
 use crate::loop_side_effects::{resolve_discard_target, resolve_loop_root, spawn_retry_merge_flow};
 use crate::loop_support::{
     current_commit, is_pid_alive, loop_not_found_error, map_merge_error, map_worktree_error, now_ts,
 };
+use crate::stream_domain::StreamDomain;
 use crate::task_domain::{TaskCreateParams, TaskDomain};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoopListParams {
     pub include_terminal: Option<bool>,
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopStartParams {
+    pub config: String,
+    pub prompt: Option<String>,
+    pub prompt_file: Option<String>,
+    pub backend: Option<String>,
+    pub exclusive: Option<bool>,
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +191,55 @@ impl LoopDomain {
         }
 
         Ok(loops)
+    }
+    pub fn start(
+        &self,
+        params: LoopStartParams,
+        streams: StreamDomain,
+    ) -> Result<LoopRecord, ApiError> {
+        let prompt_summary = self.resolve_prompt_summary(&params)?;
+        let started_at = Utc::now();
+
+        let mut command = Command::new(&self.ralph_command);
+        command
+            .arg("-c")
+            .arg(&params.config)
+            .arg("run")
+            .arg("--no-tui")
+            .current_dir(&self.workspace_root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        if let Some(prompt) = params.prompt.as_deref() {
+            command.arg("-p").arg(prompt);
+        }
+        if let Some(prompt_file) = params.prompt_file.as_deref() {
+            command.arg("-P").arg(prompt_file);
+        }
+        if let Some(backend) = params.backend.as_deref() {
+            command.arg("-b").arg(backend);
+        }
+        if params.exclusive.unwrap_or(false) {
+            command.arg("--exclusive");
+        }
+
+        command.spawn().map_err(|error| {
+            ApiError::internal(format!(
+                "failed invoking '{}' for loop.start: {error}",
+                self.ralph_command
+            ))
+        })?;
+
+        let started_loop = self.wait_for_started_loop(prompt_summary.as_ref(), started_at)?;
+        spawn_loop_monitor(
+            started_loop.id.clone(),
+            started_loop.root,
+            started_loop.pid,
+            streams,
+        );
+
+        Ok(started_loop.record)
     }
     pub fn status(&self) -> LoopStatusResult {
         let running = LoopLock::is_locked(&self.workspace_root).unwrap_or(false);
@@ -455,4 +517,184 @@ impl LoopDomain {
             queued_task_id: task.queued_task_id,
         })
     }
+}
+
+struct StartedLoop {
+    id: String,
+    pid: u32,
+    root: PathBuf,
+    record: LoopRecord,
+}
+
+impl LoopDomain {
+    fn resolve_prompt_summary(&self, params: &LoopStartParams) -> Result<Option<String>, ApiError> {
+        if let Some(prompt) = params.prompt.as_ref() {
+            return Ok(Some(prompt.clone()));
+        }
+
+        let Some(prompt_file) = params.prompt_file.as_ref() else {
+            return Ok(None);
+        };
+
+        let prompt_path = self.workspace_root.join(prompt_file);
+        if !prompt_path.exists() {
+            return Ok(Some(prompt_file.clone()));
+        }
+
+        fs::read_to_string(&prompt_path)
+            .map(Some)
+            .map_err(|error| {
+                ApiError::internal(format!(
+                    "failed reading prompt file '{}' for loop.start: {error}",
+                    prompt_path.display()
+                ))
+            })
+    }
+
+    fn wait_for_started_loop(
+        &self,
+        prompt_summary: Option<&String>,
+        started_at: chrono::DateTime<Utc>,
+    ) -> Result<StartedLoop, ApiError> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+
+        while Instant::now() <= deadline {
+            if let Ok(Some(metadata)) = LoopLock::read_existing(&self.workspace_root)
+                && is_pid_alive(metadata.pid)
+            {
+                return Ok(StartedLoop {
+                    id: "(primary)".to_string(),
+                    pid: metadata.pid,
+                    root: self.workspace_root.clone(),
+                    record: LoopRecord {
+                        id: "(primary)".to_string(),
+                        status: "running".to_string(),
+                        location: "(in-place)".to_string(),
+                        prompt: Some(metadata.prompt),
+                        merge_commit: None,
+                    },
+                });
+            }
+
+            let registry = LoopRegistry::new(&self.workspace_root);
+            if let Ok(entries) = registry.list()
+                && let Some(entry) = entries
+                    .into_iter()
+                    .filter(|entry| entry.started >= started_at && entry.is_pid_alive())
+                    .max_by_key(|entry| entry.started)
+            {
+                let location = entry
+                    .worktree_path
+                    .clone()
+                    .unwrap_or_else(|| "(in-place)".to_string());
+                let root = entry
+                    .worktree_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| self.workspace_root.clone());
+
+                return Ok(StartedLoop {
+                    id: entry.id.clone(),
+                    pid: entry.pid,
+                    root,
+                    record: LoopRecord {
+                        id: entry.id,
+                        status: "running".to_string(),
+                        location,
+                        prompt: Some(entry.prompt),
+                        merge_commit: None,
+                    },
+                });
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        Err(ApiError::service_unavailable(format!(
+            "loop.start did not expose a running loop in workspace '{}' within the startup window{}",
+            self.workspace_root.display(),
+            prompt_summary
+                .map(|prompt| format!(" for prompt '{}'", prompt.chars().take(80).collect::<String>()))
+                .unwrap_or_default()
+        )))
+    }
+}
+
+fn spawn_loop_monitor(loop_id: String, loop_root: PathBuf, pid: u32, streams: StreamDomain) {
+    thread::spawn(move || {
+        let mut event_reader = EventReader::new(loop_root.join(".ralph/events.jsonl"));
+        let mut last_status = String::from("none");
+
+        publish_status_change(&streams, &loop_id, &mut last_status, "running");
+
+        loop {
+            if let Ok(parsed) = event_reader.read_new_events() {
+                for event in parsed.events {
+                    streams.publish(
+                        "loop.event",
+                        "loop",
+                        &loop_id,
+                        json!({
+                            "loopId": loop_id,
+                            "event": event.topic,
+                            "message": event.payload.clone().unwrap_or_default(),
+                        }),
+                    );
+
+                    if let Some(line) = event.payload
+                        && !line.is_empty()
+                    {
+                        streams.publish(
+                            "loop.log.line",
+                            "loop",
+                            &loop_id,
+                            json!({
+                                "loopId": loop_id,
+                                "line": line,
+                                "source": "event",
+                            }),
+                        );
+                    }
+                }
+            }
+
+            if loop_root.join(".ralph/stop-requested").exists() {
+                publish_status_change(&streams, &loop_id, &mut last_status, "stopping");
+            }
+
+            if !is_pid_alive(pid) {
+                let terminal_status = if last_status == "stopping" {
+                    "stopped"
+                } else {
+                    "completed"
+                };
+                publish_status_change(&streams, &loop_id, &mut last_status, terminal_status);
+                break;
+            }
+
+            thread::sleep(Duration::from_millis(100));
+        }
+    });
+}
+
+fn publish_status_change(
+    streams: &StreamDomain,
+    loop_id: &str,
+    last_status: &mut String,
+    next_status: &str,
+) {
+    if last_status == next_status {
+        return;
+    }
+
+    streams.publish(
+        "loop.status.changed",
+        "loop",
+        loop_id,
+        json!({
+            "from": last_status.clone(),
+            "to": next_status,
+        }),
+    );
+    *last_status = next_status.to_string();
 }

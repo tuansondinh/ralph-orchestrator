@@ -940,9 +940,10 @@ pub struct CliConfig {
     #[serde(default = "default_mode")]
     pub default_mode: String,
 
-    /// Idle timeout in seconds for interactive mode.
-    /// Process is terminated after this many seconds of inactivity (no output AND no user input).
-    /// Set to 0 to disable idle timeout.
+    /// Idle timeout in seconds for detecting stuck iterations.
+    /// In interactive mode: signals iteration complete after inactivity.
+    /// In autonomous mode: kills stuck iteration and starts a fresh one.
+    /// Set to 0 to disable. Default: 300 (5 minutes).
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout_secs: u32,
 
@@ -970,7 +971,7 @@ fn default_mode() -> String {
 }
 
 fn default_idle_timeout() -> u32 {
-    30 // 30 seconds per spec
+    180 // 3 minutes — detect stuck iterations
 }
 
 impl Default for CliConfig {

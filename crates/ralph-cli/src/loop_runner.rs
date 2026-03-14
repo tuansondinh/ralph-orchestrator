@@ -300,11 +300,7 @@ pub async fn run_loop_impl(
 
     // Create PTY executor if using interactive mode
     let mut pty_executor = if use_pty {
-        let idle_timeout_secs = if user_interactive {
-            config.cli.idle_timeout_secs
-        } else {
-            0
-        };
+        let idle_timeout_secs = config.cli.idle_timeout_secs;
         // In autonomous (non-interactive) mode, use a very wide PTY to prevent
         // line wrapping of long NDJSON output (Pi emits 800+ char JSON lines that
         // get garbled when the PTY wraps at 80 columns).
@@ -3949,15 +3945,15 @@ fn convert_termination_type(
     match termination_type {
         ralph_adapters::TerminationType::Natural => None,
         ralph_adapters::TerminationType::IdleTimeout => {
+            // Idle timeout signals iteration complete in both modes.
+            // In autonomous mode this recovers stuck iterations by killing
+            // the current one and letting the loop start a fresh iteration.
             if interactive {
-                // In interactive mode, idle timeout signals iteration complete,
-                // not loop termination. Let output be processed for events.
                 info!("PTY idle timeout in interactive mode, iteration complete");
-                None
             } else {
-                warn!("PTY idle timeout reached, terminating loop");
-                Some(TerminationReason::Stopped)
+                warn!("PTY idle timeout in autonomous mode, killing stuck iteration and retrying");
             }
+            None
         }
         ralph_adapters::TerminationType::UserInterrupt
         | ralph_adapters::TerminationType::ForceKill => Some(TerminationReason::Interrupted),
@@ -4155,11 +4151,7 @@ async fn execute_pty(
         e.set_backend(backend.clone());
         e
     } else {
-        let idle_timeout_secs = if interactive {
-            config.cli.idle_timeout_secs
-        } else {
-            0
-        };
+        let idle_timeout_secs = config.cli.idle_timeout_secs;
         let pty_config = PtyConfig {
             interactive,
             idle_timeout_secs,
@@ -8073,7 +8065,7 @@ exit 73"#
     }
 
     #[test]
-    fn test_idle_timeout_autonomous_mode_stops() {
+    fn test_idle_timeout_autonomous_mode_continues() {
         // Given: autonomous mode and IdleTimeout termination
         let termination_type = ralph_adapters::TerminationType::IdleTimeout;
         let interactive = false;
@@ -8081,11 +8073,10 @@ exit 73"#
         // When: converting termination type
         let result = convert_termination_type(termination_type, interactive);
 
-        // Then: should return Some(Stopped)
-        assert_eq!(
-            result,
-            Some(TerminationReason::Stopped),
-            "Autonomous mode idle timeout should return Stopped"
+        // Then: should return None (retry with fresh iteration)
+        assert!(
+            result.is_none(),
+            "Autonomous mode idle timeout should return None to retry with a fresh iteration"
         );
     }
 

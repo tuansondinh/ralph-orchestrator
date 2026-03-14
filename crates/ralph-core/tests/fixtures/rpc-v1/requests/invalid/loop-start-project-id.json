@@ -1,0 +1,12 @@
+{
+  "apiVersion": "v1",
+  "id": "req-loop-start-invalid-001",
+  "method": "loop.start",
+  "params": {
+    "config": "presets/spec-driven.yml",
+    "projectId": "project-123"
+  },
+  "meta": {
+    "idempotencyKey": "idem-loop-start-invalid-20260314-0001"
+  }
+}

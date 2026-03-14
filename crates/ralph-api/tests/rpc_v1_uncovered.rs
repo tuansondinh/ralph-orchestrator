@@ -111,6 +111,27 @@ async fn system_capabilities_returns_expected_shape() -> Result<()> {
     assert!(payload["result"]["streamTopics"].is_array());
     assert!(payload["result"]["auth"]["mode"].is_string());
     assert!(payload["result"]["auth"]["supportedModes"].is_array());
+    assert!(
+        payload["result"]["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|method| method == "loop.start")
+    );
+    assert!(
+        payload["result"]["streamTopics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|topic| topic == "loop.log.line")
+    );
+    assert!(
+        payload["result"]["streamTopics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|topic| topic == "loop.event")
+    );
 
     server.stop().await;
     Ok(())

@@ -20,6 +20,8 @@
         "task.log.line",
         "task.status.changed",
         "loop.status.changed",
+        "loop.log.line",
+        "loop.event",
         "loop.merge.progress",
         "planning.prompt.issued",
         "planning.response.recorded",
@@ -162,6 +164,63 @@
       "required": [
         "from",
         "to"
+      ]
+    },
+    "loopLogLinePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "loopId": {
+          "type": "string"
+        },
+        "line": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "stdout",
+            "stderr",
+            "system",
+            "event"
+          ]
+        },
+        "lineNumber": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "loopId",
+        "line",
+        "source"
+      ]
+    },
+    "loopEventPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "loopId": {
+          "type": "string"
+        },
+        "event": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "iteration": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokensUsed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "loopId",
+        "event"
       ]
     },
     "loopMergeProgressPayload": {
@@ -341,6 +400,8 @@
         { "properties": { "topic": { "const": "task.log.line" }, "payload": { "$ref": "#/$defs/taskLogLinePayload" } }, "required": ["topic", "payload"] },
         { "properties": { "topic": { "const": "task.status.changed" }, "payload": { "$ref": "#/$defs/statusChangedPayload" } }, "required": ["topic", "payload"] },
         { "properties": { "topic": { "const": "loop.status.changed" }, "payload": { "$ref": "#/$defs/statusChangedPayload" } }, "required": ["topic", "payload"] },
+        { "properties": { "topic": { "const": "loop.log.line" }, "payload": { "$ref": "#/$defs/loopLogLinePayload" } }, "required": ["topic", "payload"] },
+        { "properties": { "topic": { "const": "loop.event" }, "payload": { "$ref": "#/$defs/loopEventPayload" } }, "required": ["topic", "payload"] },
         { "properties": { "topic": { "const": "loop.merge.progress" }, "payload": { "$ref": "#/$defs/loopMergeProgressPayload" } }, "required": ["topic", "payload"] },
         { "properties": { "topic": { "const": "planning.prompt.issued" }, "payload": { "$ref": "#/$defs/planningPromptIssuedPayload" } }, "required": ["topic", "payload"] },
         { "properties": { "topic": { "const": "planning.response.recorded" }, "payload": { "$ref": "#/$defs/planningResponseRecordedPayload" } }, "required": ["topic", "payload"] },

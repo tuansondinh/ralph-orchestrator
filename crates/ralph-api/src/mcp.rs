@@ -758,6 +758,7 @@ mod tests {
     fn catalog_maps_known_tools() {
         let catalog = tool_catalog();
         assert!(catalog.lookup("task_list").is_some());
+        assert!(catalog.lookup("loop_start").is_some());
         assert!(catalog.lookup("loop_trigger_merge_task").is_some());
         assert!(catalog.lookup("stream_next").is_some());
     }

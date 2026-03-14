@@ -34,6 +34,7 @@
         "task.retry",
         "task.cancel",
         "task.status",
+        "loop.start",
         "loop.list",
         "loop.status",
         "loop.process",
@@ -80,6 +81,7 @@
         "task.run_all",
         "task.retry",
         "task.cancel",
+        "loop.start",
         "loop.process",
         "loop.prune",
         "loop.retry",
@@ -467,6 +469,34 @@
         }
       }
     },
+    "loopStartParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promptFile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "backend": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exclusive": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "config"
+      ]
+    },
     "loopRetryParams": {
       "type": "object",
       "additionalProperties": false,
@@ -718,6 +748,7 @@
         { "properties": { "method": { "const": "task.cancel" }, "params": { "$ref": "#/$defs/idOnlyParams" } }, "required": ["method", "params"] },
         { "properties": { "method": { "const": "task.status" }, "params": { "$ref": "#/$defs/idOnlyParams" } }, "required": ["method", "params"] },
 
+        { "properties": { "method": { "const": "loop.start" }, "params": { "$ref": "#/$defs/loopStartParams" } }, "required": ["method", "params"] },
         { "properties": { "method": { "const": "loop.list" }, "params": { "$ref": "#/$defs/loopListParams" } }, "required": ["method", "params"] },
         { "properties": { "method": { "const": "loop.status" }, "params": { "$ref": "#/$defs/emptyParams" } }, "required": ["method", "params"] },
         { "properties": { "method": { "const": "loop.process" }, "params": { "$ref": "#/$defs/emptyParams" } }, "required": ["method", "params"] },
@@ -893,6 +924,14 @@
       },
       "required": ["loops"]
     },
+    "loopStartResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "loop": { "$ref": "#/$defs/loop" }
+      },
+      "required": ["loop"]
+    },
     "loopStatusResult": {
       "type": "object",
       "additionalProperties": false,
@@ -1030,6 +1069,7 @@
         { "properties": { "method": { "const": "task.cancel" }, "result": { "$ref": "#/$defs/taskResult" } }, "required": ["method", "result"] },
         { "properties": { "method": { "const": "task.status" }, "result": { "$ref": "#/$defs/taskStatusResult" } }, "required": ["method", "result"] },
 
+        { "properties": { "method": { "const": "loop.start" }, "result": { "$ref": "#/$defs/loopStartResult" } }, "required": ["method", "result"] },
         { "properties": { "method": { "const": "loop.list" }, "result": { "$ref": "#/$defs/loopListResult" } }, "required": ["method", "result"] },
         { "properties": { "method": { "const": "loop.status" }, "result": { "$ref": "#/$defs/loopStatusResult" } }, "required": ["method", "result"] },
         { "properties": { "method": { "const": "loop.process" }, "result": { "$ref": "#/$defs/successResult" } }, "required": ["method", "result"] },

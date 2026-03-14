@@ -29,6 +29,7 @@ pub const KNOWN_METHODS: &[&str] = &[
     "task.retry",
     "task.cancel",
     "task.status",
+    "loop.start",
     "loop.list",
     "loop.status",
     "loop.process",
@@ -73,6 +74,7 @@ pub const MUTATING_METHODS: &[&str] = &[
     "task.run_all",
     "task.retry",
     "task.cancel",
+    "loop.start",
     "loop.process",
     "loop.prune",
     "loop.retry",
@@ -97,6 +99,8 @@ pub const STREAM_TOPICS: &[&str] = &[
     "task.log.line",
     "task.status.changed",
     "loop.status.changed",
+    "loop.log.line",
+    "loop.event",
     "loop.merge.progress",
     "planning.prompt.issued",
     "planning.response.recorded",
@@ -252,4 +256,67 @@ fn request_schema_validator() -> &'static JSONSchema {
             .compile(&request_schema)
             .expect("request envelope schema must compile")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loop_start_request_schema_accepts_phase_one_contract() {
+        let request = json!({
+            "apiVersion": "v1",
+            "id": "req-loop-start-1",
+            "method": "loop.start",
+            "params": {
+                "config": "presets/spec-driven.yml",
+                "prompt": "Ship the migration contract.",
+                "promptFile": ".ralph/prompts/current.md",
+                "backend": "codex",
+                "exclusive": false
+            },
+            "meta": {
+                "idempotencyKey": "idem-loop-start-1"
+            }
+        });
+
+        assert!(
+            validate_request_schema(&request).is_ok(),
+            "loop.start request should be accepted by the rpc-v1 schema"
+        );
+    }
+
+    #[test]
+    fn loop_start_request_schema_rejects_web_app_specific_fields() {
+        let request = json!({
+            "apiVersion": "v1",
+            "id": "req-loop-start-invalid-1",
+            "method": "loop.start",
+            "params": {
+                "config": "presets/spec-driven.yml",
+                "projectId": "project-123"
+            },
+            "meta": {
+                "idempotencyKey": "idem-loop-start-invalid-1"
+            }
+        });
+
+        assert!(
+            validate_request_schema(&request).is_err(),
+            "loop.start request should reject web-app-specific fields"
+        );
+    }
+
+    #[test]
+    fn loop_start_is_registered_as_known_mutating_method() {
+        assert!(KNOWN_METHODS.contains(&"loop.start"));
+        assert!(MUTATING_METHODS.contains(&"loop.start"));
+    }
+
+    #[test]
+    fn stream_topics_include_loop_runtime_topics() {
+        assert!(STREAM_TOPICS.contains(&"loop.status.changed"));
+        assert!(STREAM_TOPICS.contains(&"loop.log.line"));
+        assert!(STREAM_TOPICS.contains(&"loop.event"));
+    }
 }

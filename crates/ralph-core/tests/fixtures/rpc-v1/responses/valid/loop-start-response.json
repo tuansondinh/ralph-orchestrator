@@ -1,0 +1,17 @@
+{
+  "apiVersion": "v1",
+  "id": "req-loop-start-001",
+  "method": "loop.start",
+  "result": {
+    "loop": {
+      "id": "fix-header-swift-peacock",
+      "status": "running",
+      "location": "(in-place)",
+      "prompt": "Define the upstream loop start contract."
+    }
+  },
+  "meta": {
+    "servedBy": "ralph-api",
+    "servedAt": "2026-03-14T08:55:00Z"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "apiVersion": "v1",
+  "id": "req-loop-start-001",
+  "method": "loop.start",
+  "params": {
+    "config": "presets/spec-driven.yml",
+    "prompt": "Define the upstream loop start contract.",
+    "promptFile": ".ralph/prompts/current.md",
+    "backend": "codex",
+    "exclusive": false
+  },
+  "meta": {
+    "idempotencyKey": "idem-loop-start-20260314-0001",
+    "auth": { "mode": "token", "token": "dev-token" }
+  }
+}

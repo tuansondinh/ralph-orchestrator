@@ -83,6 +83,7 @@ event_loop:
 cli:
   backend: "claude"                     # Backend name
   prompt_mode: "arg"                    # arg or stdin
+  idle_timeout_secs: 300                # 5 min — kills stuck iterations (0 to disable)
 
 # Core behaviors
 core:
@@ -161,12 +162,13 @@ Controls the orchestration loop behavior.
 
 ### cli
 
-Backend configuration.
+Backend and execution configuration.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `backend` | string | auto-detect | Backend name |
 | `prompt_mode` | string | `"arg"` | How prompt is passed |
+| `idle_timeout_secs` | integer | `300` | Idle timeout per iteration (seconds). In interactive mode, signals iteration complete. In autonomous mode, kills a stuck iteration and starts a fresh one. Set to `0` to disable. |
 
 **Backend values:**
 - `claude` — Claude Code

@@ -19,7 +19,7 @@ A hat-based orchestration framework that keeps AI agents in a loop until the tas
 ### Via npm (Recommended)
 
 ```bash
-npm install -g @tuansondinh/ralph-orchestrator-lucent
+npm install -g ralph-orchestrator-lucent
 ```
 
 ### Via Homebrew (macOS/Linux)
@@ -136,6 +136,18 @@ Ralph implements the [Ralph Wiggum technique](https://ghuntley.com/ralph/) — a
 - **Backpressure** — Gates that reject incomplete work (tests, lint, typecheck)
 - **Memories & Tasks** — Persistent learning and runtime work tracking
 - **5 Supported Builtins** — `code-assist`, `debug`, `research`, `review`, and `pdd-to-code-assist`, with more patterns documented as examples
+
+## Idle Detection
+
+Ralph automatically detects stuck iterations in autonomous mode. If no output is produced for `idle_timeout_secs` (default: 300s / 5 minutes), the stuck iteration is killed and a fresh one starts automatically.
+
+```yaml
+# ralph.yml
+cli:
+  idle_timeout_secs: 300  # default: 5 minutes (0 to disable)
+```
+
+In interactive mode, the same timeout signals that the current iteration is complete.
 
 ## RObot (Human-in-the-Loop)
 

@@ -59,6 +59,10 @@ mod tests {
     use anyhow::Result;
     use std::path::PathBuf;
 
+    fn canonicalize_for_assert(path: PathBuf) -> Result<PathBuf> {
+        Ok(std::fs::canonicalize(path)?)
+    }
+
     #[test]
     fn resolve_workspace_root_returns_none_when_unset() -> Result<()> {
         assert_eq!(resolve_workspace_root(None)?, None);
@@ -76,9 +80,15 @@ mod tests {
     fn resolve_workspace_root_resolves_relative_paths_from_current_dir() -> Result<()> {
         let temp_dir = tempfile::tempdir()?;
         let _guard = CwdGuard::set(temp_dir.path());
+        std::fs::create_dir_all(temp_dir.path().join("nested/workspace"))?;
 
         let resolved = resolve_workspace_root(Some(PathBuf::from("nested/workspace")))?;
-        assert_eq!(resolved, Some(temp_dir.path().join("nested/workspace")));
+        assert_eq!(
+            resolved.map(canonicalize_for_assert).transpose()?,
+            Some(canonicalize_for_assert(
+                temp_dir.path().join("nested/workspace")
+            )?)
+        );
         Ok(())
     }
 }

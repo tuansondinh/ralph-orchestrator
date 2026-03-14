@@ -2973,7 +2973,12 @@ mod tests {
         std::fs::create_dir_all(&nested).expect("nested dir");
         let _cwd = CwdGuard::set(&nested);
 
-        assert_eq!(resolve_workspace_root(None), temp_dir.path().to_path_buf());
+        let actual = std::fs::canonicalize(resolve_workspace_root(None))
+            .expect("canonicalize discovered workspace root");
+        let expected = std::fs::canonicalize(temp_dir.path())
+            .expect("canonicalize temp workspace root");
+
+        assert_eq!(actual, expected);
     }
 
     #[test]

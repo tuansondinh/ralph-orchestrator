@@ -14,6 +14,10 @@ dist = true
 [lints]
 workspace = true
 
+[lib]
+name = "ralph_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ralph"
 path = "src/main.rs"

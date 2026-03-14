@@ -903,6 +903,16 @@ mod tests {
         std::fs::create_dir_all(&nested).expect("nested dir");
         let _cwd = CwdGuard::set(&nested);
 
-        assert_eq!(get_tasks_path(None), root.join(".ralph/agent/tasks.jsonl"));
+        let actual = std::fs::canonicalize(
+            get_tasks_path(None)
+                .parent()
+                .expect("tasks path should have parent"),
+        )
+        .expect("canonicalize actual parent");
+        let expected = std::fs::canonicalize(root.join(".ralph/agent"))
+            .expect("canonicalize expected parent");
+
+        assert_eq!(actual, expected);
+        assert_eq!(get_tasks_path(None).file_name().and_then(|name| name.to_str()), Some("tasks.jsonl"));
     }
 }
